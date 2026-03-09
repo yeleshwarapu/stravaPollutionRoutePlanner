@@ -2,19 +2,21 @@
 
 > Built from ~5,000 miles of Strava data, riding through Riverside's industrial corridors.
 
-Generates cycling loop routes ranked by **air quality (PM2.5)** and **UV exposure** rather than speed or distance. Standard routing tools ignore the health tradeoffs of where you ride — this one doesn't.
+Generates cycling loop routes ranked by **air quality**, **UV exposure**, **tree cover**, and **surface quality** rather than speed or distance. Standard routing tools ignore the health tradeoffs of where you ride — this one doesn't.
 
 ---
 
 ## What it does
 
 1. **Downloads the cycling road network** around your origin using OpenStreetMap (via OSMnx)
-2. **Generates candidate loop routes** using a spoke-and-return algorithm across 8 directional bearings
+2. **Generates candidate loop routes** using a spoke-and-return algorithm across configurable directional bearings
 3. **Fetches live environmental data** (no API keys required):
    - PM2.5 via [Open-Meteo Air Quality API](https://open-meteo.com/en/docs/air-quality-api)
    - UV index via [Open-Meteo Forecast API](https://open-meteo.com/en/docs)
-4. **Scores and ranks routes** on a weighted health + quality metric
-5. **Outputs an interactive HTML map** with colour-coded routes and popups
+4. **Fetches tree cover and shade features** from OSM (forests, parks, tree rows, tunnels)
+5. **Scores and ranks routes** on a weighted health + quality metric
+6. **Outputs an interactive HTML map** with colour-coded routes, click-to-focus, and animated route drawing
+7. **Exports GPX files** per route with descriptive filenames for direct import into Strava
 
 ---
 
@@ -22,49 +24,116 @@ Generates cycling loop routes ranked by **air quality (PM2.5)** and **UV exposur
 
 | Factor | Weight | Source |
 |--------|--------|--------|
-| PM2.5 air quality | 45% | Open-Meteo AQ API (sampled along route) |
-| UV index | 30% | Open-Meteo Forecast API |
-| Loop shape | 15% | % unique nodes (penalises out-and-back) |
-| Paved surface | 10% | OSM `highway` tag classification |
+| PM2.5 air quality | 40% | Open-Meteo AQ API (sampled at 25% point along route) |
+| UV index | 20% | Open-Meteo Forecast API |
+| Tree cover / shade | 15% | OSM natural=wood, landuse=forest, leisure=park, tree rows |
+| Loop shape | 15% | % unique nodes (penalises out-and-back routes) |
+| Paved surface | 10% | OSM `surface` tag + `highway` type classification |
 
-Grades: **A** (≥85%) → **F** (<40%)
+Grades: **A** (≥85%) · **B** (≥70%) · **C** (≥55%) · **D** (≥40%) · **F** (<40%)
+
+Routing strongly avoids unpaved roads (8× length penalty on dirt/gravel/tracks) so the paved % shown is accurate.
+
+---
+
+## Web App
+
+```bash
+pip install -r requirements.txt
+uvicorn app:app --reload --port 8000
+```
+
+Then open [http://localhost:8000](http://localhost:8000)
+
+Features:
+- **Address autocomplete** — type any address and select from live Nominatim suggestions
+- **Distance slider** — drag from 5–100 miles
+- **Elevation filter** — Easy / Medium / Hard / Any
+- **Route cards** — click any card to highlight and animate that route on the map
+- **GPX export** — downloads the file and opens Strava's route builder simultaneously
+- **Spokes setting** — number of directional bearings explored (more = more variety, slower)
+
+---
+
+## GPX Filenames
+
+Exported files are named by location, distance, direction, date, and time:
+
+```
+riversideCA_25mi_NE_2026_0309_1432.gpx
+riversideCA_25mi_SW_2026_0309_1432.gpx
+```
 
 ---
 
 ## Install
 
 ```bash
-# Clone or copy this directory, then:
+git clone https://github.com/yeleshwarapu/stravaPollutionRoutePlanner.git
+cd stravaPollutionRoutePlanner
 pip install -r requirements.txt
 ```
 
-Requires Python 3.10+. Tested on macOS and Linux.
+Requires Python 3.10+. Tested on macOS, Linux, and Windows.
 
 ---
 
-## Usage
+## CLI Usage
 
 ```bash
-# Default: 5/8/12-mile loops from UCR, Riverside CA
+# Default origin
 python main.py
 
-# Custom origin (e.g., downtown Riverside)
+# Custom origin
 python main.py --lat 33.9806 --lon -117.3755
 
 # Different distances
 python main.py --distances 5 10 20
 
-# Include your Strava export for ride stats context
+# Include your Strava export
 python main.py --strava ~/Downloads/strava_export/activities.csv
-
-# Plan for a specific hour (e.g., 6am for UV)
-python main.py --hour 6
-
-# Save to a different file, don't auto-open browser
-python main.py --output ~/Desktop/my_routes.html --no-browser
 
 # All options
 python main.py --help
+```
+
+---
+
+## Project Structure
+
+```
+rcycle/
+├── app.py                   FastAPI web server
+├── main.py                  CLI entry point
+├── config.py                Scoring weights and thresholds
+├── requirements.txt
+├── data/
+│   ├── air_quality.py       PM2.5 from Open-Meteo (no key required)
+│   ├── uv_data.py           UV index + best riding window
+│   └── strava_loader.py     Parse Strava bulk export CSV
+├── routing/
+│   ├── network.py           OSMnx wrapper, paved/shade detection
+│   ├── loops.py             Spoke-and-return loop generation
+│   └── scorer.py            Health-aware route scoring
+├── templates/
+│   └── index.html           Web UI
+└── viz/
+    ├── mapper.py            Leaflet interactive HTML map
+    └── gpx_export.py        GPX export with road-accurate geometry
+```
+
+---
+
+## Tuning
+
+Edit `config.py` to adjust scoring weights (must sum to 1.0):
+
+```python
+weight_pm25  = 0.40   # air quality
+weight_uv    = 0.20   # UV exposure
+weight_shade = 0.15   # tree cover
+weight_loop  = 0.15   # loop shape quality
+weight_paved = 0.10   # surface quality
 ```
 
 ---
@@ -73,58 +142,28 @@ python main.py --help
 
 To load your own ride data:
 
-1. Go to Strava → Settings → My Account → Download or Delete Your Account
+1. Strava → Settings → My Account → Download or Delete Your Account
 2. Request your archive and download the ZIP
-3. Unzip — you'll find `activities.csv` inside
+3. Unzip — find `activities.csv` inside
 4. Pass it with `--strava /path/to/activities.csv`
 
-The planner uses this for ride statistics context. Route generation works without it.
-
----
-
-## Project Structure
-
-```
-rcycle/
-├── main.py                  CLI entry point
-├── config.py                Scoring weights and API settings
-├── requirements.txt
-├── data/
-│   ├── air_quality.py       PM2.5 from Open-Meteo (no key)
-│   ├── uv_data.py           UV index from Open-Meteo (no key)
-│   └── strava_loader.py     Parse Strava bulk export CSV
-├── routing/
-│   ├── network.py           OSMnx road network wrapper
-│   ├── loops.py             Loop route generation algorithm
-│   └── scorer.py            Health-aware route scoring
-└── viz/
-    └── mapper.py            Folium interactive HTML map
-```
-
----
-
-## Tuning
-
-Edit `config.py` to adjust scoring weights:
-
-```python
-weight_pm25  = 0.45   # air quality — increase if AQ is your primary concern
-weight_uv    = 0.30   # UV — increase for high-sun areas
-weight_loop  = 0.15   # shape quality
-weight_paved = 0.10   # surface quality
-```
+Route generation works without it.
 
 ---
 
 ## Roadmap
 
-- [ ] Real-time pollution overlay (raster heatmap on the map)
-- [ ] Shade coverage scoring using tree canopy data
-- [ ] Historical Strava segment analysis to find personally-validated low-AQ corridors  
-- [ ] Time-of-day optimiser (suggests earliest window with good AQ + low UV)
-- [ ] Export to GPX for Garmin / Wahoo head units
+- [x] Health-scored loop generation (PM2.5 + UV)
+- [x] Paved surface detection using OSM `surface` tag
+- [x] Tree cover / shade scoring
+- [x] Road-accurate GPX geometry (follows curves, not straight lines)
+- [x] Web UI with autocomplete, distance slider, interactive map
+- [x] Per-route GPX export with descriptive filenames
+- [ ] Strava OAuth upload (activity import)
+- [ ] Time-of-day optimiser (best window for AQ + UV + shade)
+- [ ] Heatmap overlay showing pollution/UV/shade across the map
+- [ ] Home base auto-detection from Strava GPS history
 
 ---
 
-*Built with OSMnx · Open-Meteo · Folium · NetworkX*
-"# stravaPollutionRoutePlanner" 
+*Built with OSMnx · Open-Meteo · Leaflet · NetworkX · FastAPI*
