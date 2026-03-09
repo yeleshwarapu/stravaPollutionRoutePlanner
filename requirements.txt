@@ -1,0 +1,9 @@
+osmnx>=1.9.0
+networkx>=3.0
+folium>=0.16.0
+requests>=2.31.0
+pandas>=2.0.0
+numpy>=1.24.0
+shapely>=2.0.0
+tqdm>=4.66.0
+rich>=13.0.0
