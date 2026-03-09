@@ -1,0 +1,10 @@
+# .gitignore
+__pycache__/
+*.pyc
+*.pyo
+.osmnx_cache/
+output/
+*.gpx
+.env
+*.fit
+*.fit.gz
