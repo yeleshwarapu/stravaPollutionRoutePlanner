@@ -14,7 +14,10 @@ from routing.scorer import ScoredRoute
 
 
 def _route_to_gpx(route: ScoredRoute, G, name: str) -> ET.Element:
-    """Build a <gpx> ElementTree element for one route."""
+    """Build a <gpx> ElementTree element for one route, using edge geometry
+    so the track follows actual road curves rather than straight node-to-node lines."""
+    import pyproj
+
     gpx = ET.Element("gpx", {
         "version":   "1.1",
         "creator":   "R'Cycle Co-Op",
@@ -39,26 +42,73 @@ def _route_to_gpx(route: ScoredRoute, G, name: str) -> ET.Element:
         datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     )
 
+    # Build CRS transformer once
+    crs = G.graph.get("crs")
+    transformer = None
+    if crs and str(crs).lower() not in ("epsg:4326", "wgs84"):
+        try:
+            transformer = pyproj.Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+        except Exception:
+            pass
+
+    def _proj_to_latlon(x, y):
+        if transformer:
+            lon, lat = transformer.transform(x, y)
+            return float(lat), float(lon)
+        return float(y), float(x)
+
+    def _node_latlon(node_id):
+        d = G.nodes[node_id]
+        if "lat" in d and "lon" in d:
+            return float(d["lat"]), float(d["lon"])
+        return _proj_to_latlon(d["x"], d["y"])
+
     # Track
     trk = ET.SubElement(gpx, "trk")
     ET.SubElement(trk, "name").text = name
     ET.SubElement(trk, "type").text = "cycling"
     trkseg = ET.SubElement(trk, "trkseg")
 
-    # Walk every node in the full path — use lat/lon saved by download_network
-    for node_id in route.path:
-        node = G.nodes[node_id]
-        lat = node.get("lat")   # set by download_network before UTM projection
-        lon = node.get("lon")
-        if lat is None or lon is None:
-            continue
+    path = route.path
+    if not path:
+        return gpx
+
+    def _add_trkpt(lat, lon, node_id=None):
         trkpt = ET.SubElement(trkseg, "trkpt", {
             "lat": f"{lat:.7f}",
             "lon": f"{lon:.7f}",
         })
-        ele = node.get("elevation")
-        if ele is not None:
-            ET.SubElement(trkpt, "ele").text = f"{ele:.1f}"
+        if node_id is not None:
+            ele = G.nodes[node_id].get("elevation")
+            if ele is not None:
+                ET.SubElement(trkpt, "ele").text = f"{ele:.1f}"
+
+    # Walk each edge, using geometry when available
+    for u, v in zip(path[:-1], path[1:]):
+        edge_data = G[u][v]
+        best = min(edge_data.values(), key=lambda d: d.get("length", 1e9))
+        geom = best.get("geometry")
+
+        if geom is not None:
+            pts = list(geom.coords)
+            # Ensure geometry runs u→v
+            u_data = G.nodes[u]
+            ux, uy = u_data["x"], u_data["y"]
+            if pts and abs(pts[0][0] - ux) > abs(pts[-1][0] - ux):
+                pts = pts[::-1]
+            for x, y in pts[:-1]:
+                lat, lon = _proj_to_latlon(x, y)
+                trkpt = ET.SubElement(trkseg, "trkpt", {
+                    "lat": f"{lat:.7f}",
+                    "lon": f"{lon:.7f}",
+                })
+        else:
+            lat, lon = _node_latlon(u)
+            _add_trkpt(lat, lon, u)
+
+    # Final node
+    lat, lon = _node_latlon(path[-1])
+    _add_trkpt(lat, lon, path[-1])
 
     return gpx
 
@@ -87,9 +137,7 @@ def export_best_routes(
 
     written = []
     for route in best_per_distance:
-        dist = round(route.loop.target_miles)
-        direction = _bearing_to_compass(route.loop.bearing_deg)
-        name = f"rcycle_{dist}mi_{direction}_grade{route.grade()}"
+        name = _build_filename(route)
         filename = os.path.join(output_dir, f"{name}.gpx")
 
         gpx_el = _route_to_gpx(route, G, name)
@@ -108,6 +156,7 @@ def export_all_routes(
     all_scored: list[ScoredRoute],
     G,
     output_dir: str = "output",
+    location: str = "",
 ) -> list[str]:
     """
     Export every scored route as its own GPX file, one per route.
@@ -120,9 +169,7 @@ def export_all_routes(
     written = []
 
     for i, route in enumerate(all_scored):
-        dist = round(route.loop.target_miles)
-        direction = _bearing_to_compass(route.loop.bearing_deg)
-        base_name = f"rcycle_{dist}mi_{direction}_grade{route.grade()}"
+        base_name = _build_filename(route, location)
 
         # Deduplicate filenames if two routes share the same label
         if base_name in used_names:
@@ -147,3 +194,63 @@ def export_all_routes(
 def _bearing_to_compass(deg: float) -> str:
     dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
     return dirs[round(deg / 45) % 8]
+
+
+def _build_filename(route: ScoredRoute, location: str = "") -> str:
+    """
+    Build a camelCase filename using city/location and download timestamp.
+    e.g. riversideCA_20260309_1432.gpx
+    """
+    import datetime
+    import re
+
+    # Parse city and state/country from location string
+    # Nominatim returns e.g. "Riverside, Riverside County, California, United States"
+    parts = [p.strip() for p in location.split(",") if p.strip()]
+
+    city = parts[0] if parts else "unknown"
+    # Try to get a short state/country suffix
+    suffix = ""
+    if len(parts) >= 3:
+        # US: use 2-letter state abbreviation heuristic from full state name
+        US_STATES = {
+            "Alabama":"AL","Alaska":"AK","Arizona":"AZ","Arkansas":"AR",
+            "California":"CA","Colorado":"CO","Connecticut":"CT","Delaware":"DE",
+            "Florida":"FL","Georgia":"GA","Hawaii":"HI","Idaho":"ID",
+            "Illinois":"IL","Indiana":"IN","Iowa":"IA","Kansas":"KS",
+            "Kentucky":"KY","Louisiana":"LA","Maine":"ME","Maryland":"MD",
+            "Massachusetts":"MA","Michigan":"MI","Minnesota":"MN","Mississippi":"MS",
+            "Missouri":"MO","Montana":"MT","Nebraska":"NE","Nevada":"NV",
+            "New Hampshire":"NH","New Jersey":"NJ","New Mexico":"NM","New York":"NY",
+            "North Carolina":"NC","North Dakota":"ND","Ohio":"OH","Oklahoma":"OK",
+            "Oregon":"OR","Pennsylvania":"PA","Rhode Island":"RI","South Carolina":"SC",
+            "South Dakota":"SD","Tennessee":"TN","Texas":"TX","Utah":"UT",
+            "Vermont":"VT","Virginia":"VA","Washington":"WA","West Virginia":"WV",
+            "Wisconsin":"WI","Wyoming":"WY","District of Columbia":"DC",
+        }
+        for part in parts[1:]:
+            abbr = US_STATES.get(part.strip())
+            if abbr:
+                suffix = abbr
+                break
+        if not suffix and parts[-1].strip() not in ("United States", "USA"):
+            # Non-US: use first two letters of country
+            suffix = re.sub(r'[^A-Za-z]', '', parts[-1])[:2].upper()
+
+    # camelCase the city: strip non-alphanumeric, capitalise each word
+    city_clean = re.sub(r'[^A-Za-z0-9 ]', '', city)
+    city_words = city_clean.split()
+    if city_words:
+        city_camel = city_words[0].lower() + ''.join(w.capitalize() for w in city_words[1:])
+    else:
+        city_camel = "unknown"
+
+    location_part = city_camel + suffix  # e.g. "riversideCA"
+
+    now = datetime.datetime.now()
+    dist      = round(route.loop.target_miles)
+    direction = _bearing_to_compass(route.loop.bearing_deg)
+    date_part = now.strftime("%Y_%m%d")  # 2026_0309
+    time_part = now.strftime("%H%M")     # 1432
+
+    return f"{location_part}_{dist}mi_{direction}_{date_part}_{time_part}"

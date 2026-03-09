@@ -194,9 +194,20 @@ def _run_plan(job_id: str, req: PlanRequest):
             _graph_cache[cache_key] = G
             log(f"  Network: {len(G.nodes):,} nodes, {len(G.edges):,} edges")
 
-        from routing.network import nearest_node, node_coords
+        from routing.network import nearest_node, node_coords, download_shade_features
         origin_node = nearest_node(G, lat, lon)
         origin_lat, origin_lon = node_coords(G, origin_node)
+
+        # 4b. Shade / tree cover features
+        shade_cache_key = f"shade_{round(lat,3)},{round(lon,3)}"
+        if shade_cache_key in _graph_cache:
+            shade_polys = _graph_cache[shade_cache_key]
+        else:
+            max_dist = max(req.distances)
+            log("Fetching tree cover data…")
+            shade_polys = download_shade_features(lat, lon, max_dist * 0.6)
+            _graph_cache[shade_cache_key] = shade_polys
+            log(f"  Found {len(shade_polys)} shade features")
 
         # 5. Generate + score routes
         from routing.loops import generate_candidates
@@ -206,7 +217,7 @@ def _run_plan(job_id: str, req: PlanRequest):
 
         for dist in sorted(req.distances):
             log(f"Generating {dist:.0f}-mile loops…")
-            candidates = generate_candidates(G, origin_node, dist, num_spokes=req.spokes)
+            candidates = generate_candidates(G, origin_node, dist, num_spokes=req.spokes, shade_polys=shade_polys)
             log(f"  Found {len(candidates)} candidate loops")
             if not candidates:
                 continue
@@ -265,6 +276,7 @@ def _run_plan(job_id: str, req: PlanRequest):
             all_scored=all_scored,
             G=G,
             output_dir=tmp_dir,
+            location=display,
         )
         # Store every GPX path keyed by a unique ID, in the same order as all_scored
         gpx_ids = []
@@ -290,6 +302,7 @@ def _run_plan(job_id: str, req: PlanRequest):
                 "uv_colour":     r.uv_colour,
                 "loop_pct":      round(r.loop.loop_ratio * 100),
                 "paved_pct":     round(r.paved_frac * 100),
+                "shade_pct":     round(r.shade_frac * 100),
                 "score":         round(r.score * 100),
                 "elevation_ft":  round(getattr(r, "_elevation_gain_ft", 0) or 0),
                 "gpx_id":        gpx_ids[i] if i < len(gpx_ids) else None,

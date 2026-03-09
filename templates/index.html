@@ -396,6 +396,7 @@
   .bar-fill.uv    { background: var(--amber); }
   .bar-fill.loop  { background: #a78bfa; }
   .bar-fill.paved { background: var(--green); }
+  .bar-fill.shade { background: #4ade80; opacity: 0.7; }
   .bar-pct { font-size: 9px; color: var(--text-dim); width: 28px; text-align: right; }
 
   .gpx-btn {
@@ -821,12 +822,14 @@ function buildCard(r, index) {
       <div class="meta-item"><strong>UV Index</strong>${r.uv} (${r.uv_label})</div>
       <div class="meta-item"><strong>Loop</strong>${r.loop_pct}%</div>
       <div class="meta-item"><strong>Paved</strong>${r.paved_pct}%</div>
+      <div class="meta-item"><strong>Shade</strong>${r.shade_pct ?? 0}%</div>
       ${elevHtml}
     </div>
     <div class="card-bars">
       <div class="bar-row"><span class="bar-label">AQ</span><div class="bar-track"><div class="bar-fill aq" style="width:0%" data-w="${r.score}%"></div></div><span class="bar-pct">${r.score}%</span></div>
       <div class="bar-row"><span class="bar-label">Loop</span><div class="bar-track"><div class="bar-fill loop" style="width:0%" data-w="${r.loop_pct}%"></div></div><span class="bar-pct">${r.loop_pct}%</span></div>
       <div class="bar-row"><span class="bar-label">Paved</span><div class="bar-track"><div class="bar-fill paved" style="width:0%" data-w="${r.paved_pct}%"></div></div><span class="bar-pct">${r.paved_pct}%</span></div>
+      <div class="bar-row"><span class="bar-label">Shade</span><div class="bar-track"><div class="bar-fill shade" style="width:0%" data-w="${r.shade_pct ?? 0}%"></div></div><span class="bar-pct">${r.shade_pct ?? 0}%</span></div>
     </div>
     ${r.gpx_id ? `<button class="gpx-btn" onclick="dlGpx('${r.gpx_id}', event)">↓ Download GPX &amp; Open Strava Route Builder</button>` : ''}
   `;

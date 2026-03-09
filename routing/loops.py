@@ -32,6 +32,7 @@ from routing.network import (
     path_length_m,
     path_coords,
     paved_fraction,
+    shade_fraction,
     paved_weight_graph,
     miles_to_meters,
     meters_to_miles,
@@ -50,6 +51,7 @@ class CandidateLoop:
     coords: list[tuple[float, float]]  # (lat, lon) sampled along route
     paved_frac: float = 0.0
     loop_ratio: float = 0.0            # 1.0 = perfect loop, 0 = out-and-back
+    shade_frac: float = 0.0            # fraction of route under tree cover / shade
 
 
 def _angular_diff(a: float, b: float) -> float:
@@ -100,6 +102,7 @@ def generate_candidates(
     num_spokes: int = 8,
     tolerance: float = 0.15,
     min_loop_ratio: float = 0.25,
+    shade_polys: list = None,
 ) -> list[CandidateLoop]:
     """
     Generate candidate loop routes for a given target distance.
@@ -178,6 +181,7 @@ def generate_candidates(
             coords = path_coords(G, full_path[::10])
 
             paved = paved_fraction(G, full_path)
+            shade = shade_fraction(G, full_path, shade_polys or [])
 
             candidates.append(CandidateLoop(
                 path=full_path,
@@ -190,6 +194,7 @@ def generate_candidates(
                 coords=coords,
                 paved_frac=paved,
                 loop_ratio=lr,
+                shade_frac=shade,
             ))
             break   # found a good loop for this spoke — move to next bearing
 

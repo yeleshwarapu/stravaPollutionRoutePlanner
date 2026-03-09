@@ -32,11 +32,56 @@ def _bearing_label(deg: float) -> str:
 
 
 def _get_geo_coords(G: nx.MultiDiGraph, path: list[int]) -> list[list[float]]:
+    """
+    Extract [lat, lon] points for a path, using edge geometry where available
+    so polylines hug actual road curves instead of cutting straight across.
+    """
+    import pyproj
+
+    if not path:
+        return []
+
+    crs = G.graph.get("crs")
+    transformer = None
+    if crs and str(crs).lower() not in ("epsg:4326", "wgs84"):
+        try:
+            transformer = pyproj.Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+        except Exception:
+            pass
+
+    def _proj_to_latlon(x, y):
+        if transformer:
+            lon, lat = transformer.transform(x, y)
+            return [float(lat), float(lon)]
+        return [float(y), float(x)]
+
+    def _node_latlon(node_id):
+        d = G.nodes[node_id]
+        if "lat" in d and "lon" in d:
+            return [float(d["lat"]), float(d["lon"])]
+        return _proj_to_latlon(d["x"], d["y"])
+
     coords = []
-    for n in path:
-        data = G.nodes[n]
-        if "lat" in data and "lon" in data:
-            coords.append([float(data["lat"]), float(data["lon"])])
+    for u, v in zip(path[:-1], path[1:]):
+        if not G.has_edge(u, v):
+            coords.append(_node_latlon(u))
+            continue
+        edge_data = G[u][v]
+        best = min(edge_data.values(), key=lambda d: d.get("length", 1e9))
+        geom = best.get("geometry")
+
+        if geom is not None:
+            pts = list(geom.coords)
+            u_data = G.nodes[u]
+            ux, uy = u_data["x"], u_data["y"]
+            if pts and abs(pts[0][0] - ux) > abs(pts[-1][0] - ux):
+                pts = pts[::-1]
+            for x, y in pts[:-1]:
+                coords.append(_proj_to_latlon(x, y))
+        else:
+            coords.append(_node_latlon(u))
+
+    coords.append(_node_latlon(path[-1]))
     return coords
 
 

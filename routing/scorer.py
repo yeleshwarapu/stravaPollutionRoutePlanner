@@ -65,6 +65,10 @@ class ScoredRoute:
         return self.loop.paved_frac
 
     @property
+    def shade_frac(self) -> float:
+        return self.loop.shade_frac
+
+    @property
     def coords(self) -> list:
         return self.loop.coords
 
@@ -197,6 +201,7 @@ def score_route(
     # ── Structural scores ─────────────────────────────────────────────────────
     loop_score  = loop.loop_ratio   # already 0–1
     paved_score = loop.paved_frac   # already 0–1
+    shade_score = loop.shade_frac   # already 0–1
 
     # Component scores (higher = better)
     aq_score = 1.0 - pm25_norm
@@ -207,14 +212,16 @@ def score_route(
         "uv":          round(uv_score, 3),
         "loop_shape":  round(loop_score, 3),
         "paved":       round(paved_score, 3),
+        "shade":       round(shade_score, 3),
     }
 
     # ── Weighted final score ──────────────────────────────────────────────────
     final = (
-        cfg.weight_pm25  * aq_score   +
-        cfg.weight_uv    * uv_score   +
-        cfg.weight_loop  * loop_score +
-        cfg.weight_paved * paved_score
+        cfg.weight_pm25  * aq_score    +
+        cfg.weight_uv    * uv_score    +
+        cfg.weight_loop  * loop_score  +
+        cfg.weight_paved * paved_score +
+        cfg.weight_shade * shade_score
     )
 
     return ScoredRoute(

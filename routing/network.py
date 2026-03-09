@@ -168,19 +168,63 @@ def path_coords(
     geographic: bool = True,
 ) -> list[tuple[float, float]]:
     """
-    Extract (lat, lon) coordinate list from a node path.
-
-    If geographic=True, attempts to return geographic lat/lon.
-    Falls back to projected (y, x) if no lat/lon stored.
+    Extract (lat, lon) coordinate list from a node path, using edge geometry
+    where available so the line follows actual road curves rather than drawing
+    straight lines between intersections.
     """
+    import pyproj
+    # Build a transformer from the graph CRS back to WGS84 for projected graphs
+    crs = G.graph.get("crs")
+    transformer = None
+    if crs and str(crs).lower() not in ("epsg:4326", "wgs84"):
+        try:
+            transformer = pyproj.Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+        except Exception:
+            transformer = None
+
+    def _proj_to_latlon(x, y):
+        if transformer:
+            lon, lat = transformer.transform(x, y)
+            return float(lat), float(lon)
+        return float(y), float(x)
+
+    def _node_latlon(node_id):
+        d = G.nodes[node_id]
+        if "lat" in d and "lon" in d:
+            return float(d["lat"]), float(d["lon"])
+        return _proj_to_latlon(d["x"], d["y"])
+
+    if len(path) == 0:
+        return []
+    if len(path) == 1:
+        return [_node_latlon(path[0])]
+
     coords = []
-    for n in path:
-        data = G.nodes[n]
-        if geographic and "lat" in data:
-            coords.append((float(data["lat"]), float(data["lon"])))
+    for u, v in zip(path[:-1], path[1:]):
+        if not G.has_edge(u, v):
+            # Edge missing in this graph — fall back to just the node point
+            coords.append(_node_latlon(u))
+            continue
+        edges = G[u][v]
+        best = min(edges.values(), key=lambda d: d.get("length", 1e9))
+        geom = best.get("geometry")  # Shapely LineString or None
+
+        if geom is not None:
+            # Edge has full road geometry — extract all intermediate points
+            pts = list(geom.coords)  # (x, y) in graph CRS
+            # Detect if geometry runs u→v or v→u by comparing first point to u
+            u_data = G.nodes[u]
+            ux, uy = u_data["x"], u_data["y"]
+            if pts and abs(pts[0][0] - ux) > abs(pts[-1][0] - ux):
+                pts = pts[::-1]  # reverse so it runs u→v
+            for x, y in pts[:-1]:  # exclude last point, added by next edge's first
+                coords.append(_proj_to_latlon(x, y))
         else:
-            # projected coords — caller must handle
-            coords.append((float(data.get("y", 0)), float(data.get("x", 0))))
+            # No geometry — just use the node point
+            coords.append(_node_latlon(u))
+
+    # Always append the final node
+    coords.append(_node_latlon(path[-1]))
     return coords
 
 
@@ -192,6 +236,8 @@ def paved_fraction(G: nx.MultiDiGraph, path: list[int]) -> float:
     total_len = 0.0
     paved_len = 0.0
     for u, v in zip(path[:-1], path[1:]):
+        if not G.has_edge(u, v):
+            continue
         edges = G[u][v]
         best = min(edges.values(), key=lambda d: d.get("length", 1e9))
         length = best.get("length", 0)
@@ -264,3 +310,138 @@ def paved_weight_graph(G: nx.MultiDiGraph, unpaved_penalty: float = 8.0) -> nx.M
         if not _is_edge_paved(data):
             H[u][v][key]["length"] = data.get("length", 1.0) * unpaved_penalty
     return H
+
+
+# ── Shade / tree cover ────────────────────────────────────────────────────────
+
+def download_shade_features(
+    lat: float,
+    lon: float,
+    radius_miles: float,
+) -> list:
+    """
+    Download tree cover and shade polygons from OSM within radius_miles.
+    Returns a list of Shapely geometries (forests, parks, tree rows).
+    Falls back to an empty list if the query fails or shapely is unavailable.
+    """
+    try:
+        import osmnx as ox
+        from shapely.geometry import MultiPolygon, Polygon
+        from shapely.ops import unary_union
+
+        radius_m = miles_to_meters(radius_miles)
+
+        # Tags that indicate meaningful tree cover / shade
+        shade_tags = {
+            "natural":  ["wood", "tree_row", "tree"],
+            "landuse":  ["forest", "orchard", "vineyard"],
+            "leisure":  ["park", "garden", "nature_reserve"],
+        }
+
+        try:
+            features = ox.features_from_point(
+                (lat, lon), tags=shade_tags, dist=radius_m
+            )
+        except Exception:
+            return []
+
+        if features is None or features.empty:
+            return []
+
+        polys = []
+        for geom in features.geometry:
+            if geom is None:
+                continue
+            if geom.geom_type in ("Polygon", "MultiPolygon"):
+                polys.append(geom)
+            elif geom.geom_type == "LineString":
+                # tree rows — buffer by 10 m to give a shade corridor
+                polys.append(geom.buffer(10))
+            elif geom.geom_type == "Point":
+                # individual trees — buffer by 5 m
+                polys.append(geom.buffer(5))
+
+        return polys
+
+    except Exception:
+        return []
+
+
+def shade_fraction(
+    G: nx.MultiDiGraph,
+    path: list[int],
+    shade_polys: list,
+) -> float:
+    """
+    Estimate fraction of the path that is shaded by tree cover.
+    For each edge, checks if its midpoint falls within any shade polygon.
+    Returns 0.0–1.0 (1.0 = fully shaded).
+    Falls back to 0.0 if shapely is unavailable or polys is empty.
+    """
+    if not shade_polys or len(path) < 2:
+        return 0.0
+
+    try:
+        import pyproj
+        from shapely.geometry import Point
+        from shapely.ops import unary_union
+        from shapely.strtree import STRtree
+
+        # Build spatial index for fast lookup
+        tree = STRtree(shade_polys)
+
+        # Build CRS transformer to WGS84
+        crs = G.graph.get("crs")
+        transformer = None
+        if crs and str(crs).lower() not in ("epsg:4326", "wgs84"):
+            try:
+                transformer = pyproj.Transformer.from_crs(
+                    crs, "EPSG:4326", always_xy=True
+                )
+            except Exception:
+                pass
+
+        def _edge_midpoint_latlon(u, v):
+            """Return (lat, lon) of edge midpoint using geometry if available."""
+            if not G.has_edge(u, v):
+                return None
+            best = min(G[u][v].values(), key=lambda d: d.get("length", 1e9))
+            geom = best.get("geometry")
+            if geom is not None:
+                mp = geom.interpolate(0.5, normalized=True)
+                x, y = mp.x, mp.y
+            else:
+                u_d, v_d = G.nodes[u], G.nodes[v]
+                x = (u_d["x"] + v_d["x"]) / 2
+                y = (u_d["y"] + v_d["y"]) / 2
+            if transformer:
+                lon, lat = transformer.transform(x, y)
+                return float(lat), float(lon)
+            return float(y), float(x)
+
+        total_len = 0.0
+        shaded_len = 0.0
+
+        for u, v in zip(path[:-1], path[1:]):
+            if not G.has_edge(u, v):
+                continue
+            best = min(G[u][v].values(), key=lambda d: d.get("length", 1e9))
+            edge_len = best.get("length", 0.0)
+            total_len += edge_len
+
+            # Fast tunnel/covered check — always shaded
+            if best.get("tunnel") or best.get("covered") == "yes":
+                shaded_len += edge_len
+                continue
+
+            mid = _edge_midpoint_latlon(u, v)
+            if mid is None:
+                continue
+            pt = Point(mid[1], mid[0])  # shapely uses (lon, lat)
+            if tree.query(pt, predicate="intersects").size > 0:
+                shaded_len += edge_len
+
+        return (shaded_len / total_len) if total_len > 0 else 0.0
+
+    except Exception:
+        return 0.0
