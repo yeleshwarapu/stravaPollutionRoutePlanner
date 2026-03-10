@@ -180,17 +180,20 @@ def _run_plan(job_id: str, req: PlanRequest):
         uv_window = None
         try:
             from data.uv_data import uv_window_description, get_current_uv, uv_category
-            from data.air_quality import get_current_pm25, pm25_to_aqi_category
+            from data.air_quality import get_current_pm25, pm25_to_aqi_category, get_current_ozone, ozone_to_aqi_category
             uv_now    = get_current_uv(lat, lon)
             uv_lab, _ = uv_category(uv_now)
             uv_desc   = uv_window_description(lat, lon)
             uv_window = uv_desc["best_window"]
             pm25_now  = get_current_pm25(lat, lon)
             aq_lab, _ = pm25_to_aqi_category(pm25_now)
+            ozone_now    = get_current_ozone(lat, lon)
+            ozone_lab, _ = ozone_to_aqi_category(ozone_now)
             log(f"  UV now     : {uv_now:.1f} ({uv_lab})")
             log(f"  Best window: {uv_desc['window_label']} (UV {uv_desc['window_uv']}, {uv_desc['window_category']})")
             log(f"  UV peak    : {uv_desc['peak_label']} — {uv_desc['peak_uv']} ({uv_desc['peak_category']})")
             log(f"  PM2.5 now  : {pm25_now:.1f} μg/m³ ({aq_lab})")
+            log(f"  Ozone now  : {ozone_now:.1f} μg/m³ ({ozone_lab})")
             job["env"] = {
                 "uv":             uv_now,
                 "uv_label":       uv_lab,
@@ -202,22 +205,41 @@ def _run_plan(job_id: str, req: PlanRequest):
                 "uv_peak_cat":    uv_desc["peak_category"],
                 "pm25":           pm25_now,
                 "aq_label":       aq_lab,
+                "ozone":          ozone_now,
+                "ozone_label":    ozone_lab,
             }
         except Exception as e:
             log(f"  Environmental fetch failed: {e}")
 
         # 4. Road network (cached)
-        cache_key = f"{round(lat,3)},{round(lon,3)},{req.network}"
-        if cache_key in _graph_cache:
-            log("Loading cached road network…", step="network", eta=2)
-            G = _graph_cache[cache_key]
+        # Radius = half the loop distance (the farthest the route ever goes) + 5% buffer.
+        # Bucket to nearest 2mi so nearby distances share a cache entry instead of
+        # re-downloading for every slider nudge.
+        max_dist   = max(req.distances)
+        radius_mi  = max_dist * 0.52          # 0.52 = half-loop + small buffer
+        radius_bucket = round(radius_mi / 2) * 2   # round to nearest 2mi
+        cache_key  = f"{round(lat,3)},{round(lon,3)},{req.network},{radius_bucket}"
+
+        # Reuse any cached network that covers at least this radius
+        cached_G = None
+        for k, v in _graph_cache.items():
+            if k.startswith(f"{round(lat,3)},{round(lon,3)},{req.network},"):
+                try:
+                    cached_r = int(k.split(",")[3])
+                    if cached_r >= radius_bucket:
+                        cached_G = v
+                        break
+                except (IndexError, ValueError):
+                    pass
+
+        if cached_G is not None:
+            log(f"Loading cached road network…", step="network", eta=2)
+            G = cached_G
         else:
-            max_dist = max(req.distances)
-            # ETA scales with area (radius²): 5mi~15s, 15mi~30s, 30mi~55s, 60mi~90s
-            _net_eta = max(10, int(10 + (max_dist * 0.6) ** 1.4 * 0.35))
-            log(f"Downloading {req.network} network within {max_dist * 0.6:.1f} mi…", step="network", eta=_net_eta)
+            _net_eta = max(10, int(8 + radius_mi ** 1.4 * 0.4))
+            log(f"Downloading {req.network} network within {radius_mi:.1f} mi…", step="network", eta=_net_eta)
             from routing.network import download_network
-            G = download_network(lat, lon, max_dist * 0.6, req.network)
+            G = download_network(lat, lon, radius_mi, req.network)
             _graph_cache[cache_key] = G
             log(f"  Network: {len(G.nodes):,} nodes, {len(G.edges):,} edges")
 
@@ -226,14 +248,13 @@ def _run_plan(job_id: str, req: PlanRequest):
         origin_lat, origin_lon = node_coords(G, origin_node)
 
         # 4b. Shade / tree cover features
-        shade_cache_key = f"shade_{round(lat,3)},{round(lon,3)}"
+        shade_cache_key = f"shade_{round(lat,3)},{round(lon,3)},{radius_bucket}"
         if shade_cache_key in _graph_cache:
             shade_polys = _graph_cache[shade_cache_key]
         else:
-            max_dist = max(req.distances)
-            _shade_eta = max(5, int(5 + (max_dist * 0.6) ** 1.2 * 0.2))
+            _shade_eta = max(5, int(4 + radius_mi ** 1.2 * 0.2))
             log("Fetching tree cover data…", step="shade", eta=_shade_eta)
-            shade_polys = download_shade_features(lat, lon, max_dist * 0.6)
+            shade_polys = download_shade_features(lat, lon, radius_mi)
             _graph_cache[shade_cache_key] = shade_polys
             log(f"  Found {len(shade_polys)} shade features")
 
@@ -363,23 +384,27 @@ def _run_plan(job_id: str, req: PlanRequest):
         route_cards = []
         for i, r in enumerate(all_scored):
             card = {
-                "index":         i,
-                "grade":         r.grade(),
-                "miles":         round(r.length_miles, 1),
-                "target_miles":  round(r.loop.target_miles),
-                "direction":     _bearing_label(r.loop.bearing_deg),
-                "pm25":          round(r.pm25, 1),
-                "aqi_label":     r.aqi_label,
-                "aqi_colour":    r.aqi_colour,
-                "uv":            round(r.uv, 1),
-                "uv_label":      r.uv_label,
-                "uv_colour":     r.uv_colour,
-                "loop_pct":      round(r.loop.loop_ratio * 100),
-                "paved_pct":     round(r.paved_frac * 100),
-                "shade_pct":     round(r.shade_frac * 100),
-                "score":         round(r.score * 100),
-                "elevation_ft":  round(getattr(r, "_elevation_gain_ft", 0) or 0),
-                "gpx_id":        gpx_ids[i] if i < len(gpx_ids) else None,
+                "index":           i,
+                "grade":           r.grade(),
+                "miles":           round(r.length_miles, 1),
+                "target_miles":    round(r.loop.target_miles),
+                "direction":       _bearing_label(r.loop.bearing_deg),
+                "pm25":            round(r.pm25, 1),
+                "aqi_label":       r.aqi_label,
+                "aqi_colour":      r.aqi_colour,
+                "ozone":           round(r.ozone, 1),
+                "ozone_label":     r.ozone_label,
+                "ozone_colour":    r.ozone_colour,
+                "uv":              round(r.uv, 1),
+                "uv_label":        r.uv_label,
+                "uv_colour":       r.uv_colour,
+                "loop_pct":        round(r.loop.loop_ratio * 100),
+                "paved_pct":       round(r.paved_frac * 100),
+                "shade_pct":       round(r.shade_frac * 100),
+                "score":           round(r.score * 100),
+                "score_breakdown": {k: round(v * 100) for k, v in r.score_breakdown.items()},
+                "elevation_ft":    round(getattr(r, "_elevation_gain_ft", 0) or 0),
+                "gpx_id":          gpx_ids[i] if i < len(gpx_ids) else None,
             }
             route_cards.append(card)
 

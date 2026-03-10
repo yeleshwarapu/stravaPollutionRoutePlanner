@@ -25,7 +25,7 @@ import os
 from dataclasses import dataclass
 
 from routing.loops import CandidateLoop
-from data.air_quality import get_route_pm25, normalise_pm25, pm25_to_aqi_category
+from data.air_quality import get_route_pm25, get_route_ozone, normalise_pm25, normalise_ozone, pm25_to_aqi_category, ozone_to_aqi_category
 from data.uv_data import get_current_uv, normalise_uv, uv_category
 from config import Config, DEFAULT
 
@@ -33,6 +33,7 @@ from config import Config, DEFAULT
 DEV_MODE: bool = os.environ.get("RCYCLE_DEV", "0") == "1"
 
 _DEV_PM25 = 8.0    # "Good" air quality stub
+_DEV_OZONE = 80.0  # "Moderate" ozone stub
 _DEV_UV   = 3.5    # "Moderate" UV stub
 
 
@@ -41,9 +42,12 @@ class ScoredRoute:
     loop: CandidateLoop
     score: float            # 0–1, higher = healthier
     pm25: float             # μg/m³
+    ozone: float            # μg/m³
     uv: float               # UV index
     aqi_label: str
     aqi_colour: str
+    ozone_label: str
+    ozone_colour: str
     uv_label: str
     uv_colour: str
     score_breakdown: dict   # component scores before weighting
@@ -88,7 +92,8 @@ class ScoredRoute:
         direction = _bearing_to_compass(self.bearing_deg)
         return (
             f"Grade {self.grade()} | {self.length_miles:.1f} mi | "
-            f"AQ: {self.aqi_label} ({self.pm25:.1f} μg/m³) | "
+            f"PM2.5: {self.aqi_label} ({self.pm25:.1f} μg/m³) | "
+            f"Ozone: {self.ozone_label} ({self.ozone:.1f} μg/m³) | "
             f"UV: {self.uv_label} ({self.uv:.1f}) | "
             f"Loop: {self.loop.loop_ratio:.0%} | "
             f"Paved: {self.paved_frac:.0%} | "
@@ -195,11 +200,16 @@ def score_route(
     # ── Air quality ──────────────────────────────────────────────────────────
     if DEV_MODE:
         pm25 = _DEV_PM25
+        ozone = _DEV_OZONE
     else:
         pm25 = get_route_pm25([(sample_lat, sample_lon)], sample_every_n=1)
+        ozone = get_route_ozone([(sample_lat, sample_lon)], sample_every_n=1)
 
     pm25_norm = normalise_pm25(pm25, ceiling=cfg.pm25_unhealthy)
     aqi_label, aqi_colour = pm25_to_aqi_category(pm25)
+
+    ozone_norm = normalise_ozone(ozone, ceiling=cfg.ozone_unhealthy)
+    ozone_label, ozone_colour = ozone_to_aqi_category(ozone)
 
     # ── UV index — sampled at same quarter-point ──────────────────────────────
     if DEV_MODE:
@@ -220,10 +230,12 @@ def score_route(
 
     # Component scores (higher = better)
     aq_score = 1.0 - pm25_norm
+    ozone_score = 1.0 - ozone_norm
     uv_score = 1.0 - uv_norm
 
     breakdown = {
-        "air_quality": round(aq_score, 3),
+        "pm25":        round(aq_score, 3),
+        "ozone":       round(ozone_score, 3),
         "uv":          round(uv_score, 3),
         "loop_shape":  round(loop_score, 3),
         "paved":       round(paved_score, 3),
@@ -233,6 +245,7 @@ def score_route(
     # ── Weighted final score ──────────────────────────────────────────────────
     final = (
         cfg.weight_pm25  * aq_score    +
+        cfg.weight_ozone * ozone_score +
         cfg.weight_uv    * uv_score    +
         cfg.weight_loop  * loop_score  +
         cfg.weight_paved * paved_score +
@@ -243,9 +256,12 @@ def score_route(
         loop=loop,
         score=round(final, 4),
         pm25=pm25,
+        ozone=ozone,
         uv=uv,
         aqi_label=aqi_label,
         aqi_colour=aqi_colour,
+        ozone_label=ozone_label,
+        ozone_colour=ozone_colour,
         uv_label=uv_lab,
         uv_colour=uv_col,
         score_breakdown=breakdown,

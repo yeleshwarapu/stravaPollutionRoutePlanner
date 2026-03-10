@@ -35,17 +35,23 @@ class Config:
     aq_sample_spacing_miles: float = 0.5
 
     # ── Scoring weights (must sum to 1.0) ───────────────────
-    weight_pm25:   float = 0.30   # air quality
+    weight_pm25:   float = 0.20   # PM2.5 air quality
+    weight_ozone:  float = 0.10   # ozone air quality
     weight_uv:     float = 0.20   # UV exposure
     weight_loop:   float = 0.15   # how "loopy" vs out-and-back
     weight_paved:  float = 0.10   # proportion paved/bike-friendly
     weight_shade:  float = 0.25   # tree cover / shade along route (elevated: shade directly offsets UV in sunny climates)
 
-    # ── Air Quality thresholds (EPA PM2.5 μg/m³) ────────────
+    # ── Air Quality thresholds (EPA μg/m³) ────────────
     pm25_good:        float = 12.0   # AQI 0–50
     pm25_moderate:    float = 35.4   # AQI 51–100
     pm25_unhealthy:   float = 55.4   # AQI 101–150
     pm25_very_bad:    float = 150.4  # AQI 151+
+
+    ozone_good:       float = 106.0  # ~54 ppb, AQI 0–50
+    ozone_moderate:   float = 137.0  # ~70 ppb, AQI 51–100
+    ozone_unhealthy:  float = 167.0  # ~85 ppb, AQI 101–150
+    ozone_very_bad:   float = 392.0  # ~200 ppb, AQI 151+
 
     # ── UV thresholds ────────────────────────────────────────
     uv_low:           float = 2.0

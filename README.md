@@ -5,14 +5,14 @@ colorFrom: yellow
 colorTo: green
 sdk: docker
 pinned: false
-short_description: Cycling routes ranked by air quality, UV & shade
+short_description: Cycling routes ranked by air quality (PM2.5 & ozone), UV & shade
 ---
 
 # R'Cycle — Health-Aware Cycling Route Planner
 
 > Built from ~5,000 miles of Strava data, riding through Riverside's industrial corridors.
 
-Generates cycling loop routes ranked by **air quality**, **UV exposure**, **tree cover**, and **surface quality** rather than speed or distance. Standard routing tools ignore the health tradeoffs of where you ride — this one doesn't.
+Generates cycling loop routes ranked by **air quality (PM2.5 & ozone)**, **UV exposure**, **tree cover**, and **surface quality** rather than speed or distance. Standard routing tools ignore the health tradeoffs of where you ride — this one doesn't.
 
 ---
 
@@ -34,9 +34,10 @@ Generates cycling loop routes ranked by **air quality**, **UV exposure**, **tree
 
 | Factor | Weight | Source |
 |--------|--------|--------|
-| PM2.5 air quality | 40% | Open-Meteo AQ API (sampled at 25% point along route) |
+| PM2.5 air quality | 20% | Open-Meteo AQ API (sampled at 25% point along route) |
+| Ozone air quality | 10% | Open-Meteo AQ API (sampled at 25% point along route) |
 | UV index | 20% | Open-Meteo Forecast API |
-| Tree cover / shade | 15% | OSM natural=wood, landuse=forest, leisure=park, tree rows |
+| Tree cover / shade | 25% | OSM natural=wood, landuse=forest, leisure=park, tree rows |
 | Loop shape | 15% | % unique nodes (penalises out-and-back routes) |
 | Paved surface | 10% | OSM `surface` tag + `highway` type classification |
 
@@ -62,6 +63,28 @@ Features:
 - **Route cards** — click any card to highlight and animate that route on the map
 - **GPX export** — downloads the file and opens Strava's route builder simultaneously
 - **Spokes setting** — number of directional bearings explored (more = more variety, slower)
+
+---
+
+## Screenshots
+
+### Web Interface Overview
+![Web Interface](screenshots/web_interface.png)
+*The main web interface showing the address input, distance slider, and route cards with health scores.*
+
+### Interactive Map with Routes
+![Interactive Map](screenshots/interactive_map.png)
+*Color-coded routes on the map. Green routes indicate healthier options, red routes show areas with higher pollution or UV exposure.*
+
+### Route Details Card
+![Route Details](screenshots/route_details.png)
+*Detailed breakdown of route health factors including PM2.5, ozone, UV index, and surface quality.*
+
+### GPX Export in Strava
+![GPX Export](screenshots/gpx_export.png)
+*Exported GPX file opened in Strava's route builder, ready for navigation.*
+
+**To add screenshots:** Place PNG/JPG images in the `screenshots/` directory and update the image paths above.
 
 ---
 
@@ -117,8 +140,10 @@ rcycle/
 ├── main.py                  CLI entry point
 ├── config.py                Scoring weights and thresholds
 ├── requirements.txt
+├── README.md
+├── screenshots/             Screenshots for documentation
 ├── data/
-│   ├── air_quality.py       PM2.5 from Open-Meteo (no key required)
+│   ├── air_quality.py       PM2.5 & ozone from Open-Meteo (no key required)
 │   ├── uv_data.py           UV index + best riding window
 │   └── strava_loader.py     Parse Strava bulk export CSV
 ├── routing/
@@ -139,9 +164,10 @@ rcycle/
 Edit `config.py` to adjust scoring weights (must sum to 1.0):
 
 ```python
-weight_pm25  = 0.40   # air quality
+weight_pm25  = 0.20   # PM2.5 air quality
+weight_ozone = 0.10   # ozone air quality
 weight_uv    = 0.20   # UV exposure
-weight_shade = 0.15   # tree cover
+weight_shade = 0.25   # tree cover
 weight_loop  = 0.15   # loop shape quality
 weight_paved = 0.10   # surface quality
 ```
@@ -164,6 +190,7 @@ Route generation works without it.
 ## Roadmap
 
 - [x] Health-scored loop generation (PM2.5 + UV)
+- [x] Ozone air quality scoring
 - [x] Paved surface detection using OSM `surface` tag
 - [x] Tree cover / shade scoring
 - [x] Road-accurate GPX geometry (follows curves, not straight lines)

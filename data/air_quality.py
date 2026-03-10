@@ -19,11 +19,11 @@ TIMEOUT = 10
 
 
 def _fetch_raw(lat: float, lon: float) -> dict:
-    """Pull 24 h of hourly PM2.5 data from Open-Meteo."""
+    """Pull 24 h of hourly PM2.5 and ozone data from Open-Meteo."""
     params = {
         "latitude": round(lat, 4),
         "longitude": round(lon, 4),
-        "hourly": "pm2_5,us_aqi",
+        "hourly": "pm2_5,us_aqi,ozone",
         "timezone": "auto",
         "forecast_days": 1,
     }
@@ -67,6 +67,41 @@ def get_current_pm25(lat: float, lon: float) -> float:
     return float(val)
 
 
+def get_current_ozone(lat: float, lon: float) -> float:
+    """
+    Return the current hour's ozone reading (μg/m³) for a lat/lon.
+    Falls back to daily mean if current hour is unavailable.
+    """
+    data = _fetch_raw(lat, lon)
+    hourly = data.get("hourly", {})
+    times  = hourly.get("time", [])
+    ozones = hourly.get("ozone", [])
+
+    if not ozones:
+        return 50.0  # safe default, around 25 ppb
+
+    # Find index closest to now
+    now = datetime.datetime.now()
+    best_idx = 0
+    best_diff = float("inf")
+    for i, t_str in enumerate(times):
+        try:
+            t = datetime.datetime.fromisoformat(t_str)
+            diff = abs((t - now).total_seconds())
+            if diff < best_diff:
+                best_diff = diff
+                best_idx = i
+        except ValueError:
+            continue
+
+    val = ozones[best_idx]
+    if val is None:
+        # fallback: mean of non-null values
+        valid = [v for v in ozones if v is not None]
+        return float(np.mean(valid)) if valid else 50.0
+    return float(val)
+
+
 def get_route_pm25(
     coords: list[tuple[float, float]],
     sample_every_n: int = 5,
@@ -98,6 +133,37 @@ def get_route_pm25(
     return float(np.mean(readings)) if readings else 10.0
 
 
+def get_route_ozone(
+    coords: list[tuple[float, float]],
+    sample_every_n: int = 5,
+) -> float:
+    """
+    Estimate average ozone exposure along a route.
+
+    Parameters
+    ----------
+    coords : list of (lat, lon) tuples sampled along the route
+    sample_every_n : only query every Nth point to stay within rate limits
+
+    Returns
+    -------
+    float : mean ozone (μg/m³) across sampled points
+    """
+    if not coords:
+        return 50.0
+
+    sample = coords[::sample_every_n] if len(coords) > sample_every_n else coords
+    readings: list[float] = []
+
+    for lat, lon in sample:
+        try:
+            readings.append(get_current_ozone(lat, lon))
+        except Exception:
+            continue  # skip on network error
+
+    return float(np.mean(readings)) if readings else 50.0
+
+
 def pm25_to_aqi_category(pm25: float) -> tuple[str, str]:
     """
     Convert PM2.5 μg/m³ to EPA AQI category label and hex colour.
@@ -112,6 +178,26 @@ def pm25_to_aqi_category(pm25: float) -> tuple[str, str]:
     elif pm25 <= 150.4:
         return "Unhealthy", "#ff0000"
     elif pm25 <= 250.4:
+        return "Very Unhealthy", "#8f3f97"
+    else:
+        return "Hazardous", "#7e0023"
+
+
+def ozone_to_aqi_category(ozone: float) -> tuple[str, str]:
+    """
+    Convert ozone μg/m³ to EPA AQI category label and hex colour.
+    Returns (label, hex_colour).
+    Note: Using approximate μg/m³ thresholds based on ppb breakpoints.
+    """
+    if ozone <= 106.0:  # ~54 ppb
+        return "Good", "#00e400"
+    elif ozone <= 137.0:  # ~70 ppb
+        return "Moderate", "#ffff00"
+    elif ozone <= 167.0:  # ~85 ppb
+        return "Unhealthy for Sensitive Groups", "#ff7e00"
+    elif ozone <= 206.0:  # ~105 ppb
+        return "Unhealthy", "#ff0000"
+    elif ozone <= 392.0:  # ~200 ppb
         return "Very Unhealthy", "#8f3f97"
     else:
         return "Hazardous", "#7e0023"
@@ -145,3 +231,8 @@ def sample_aq_grid(
 def normalise_pm25(pm25: float, ceiling: float = 55.4) -> float:
     """Return 0 (clean) → 1 (worst), clamped at ceiling."""
     return min(pm25 / ceiling, 1.0)
+
+
+def normalise_ozone(ozone: float, ceiling: float = 200.0) -> float:
+    """Return 0 (clean) → 1 (worst), clamped at ceiling."""
+    return min(ozone / ceiling, 1.0)
