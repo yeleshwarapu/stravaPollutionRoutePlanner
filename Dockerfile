@@ -22,8 +22,7 @@ COPY . .
 RUN mkdir -p /app/.osmnx_cache && chmod 777 /app/.osmnx_cache
 
 # Render / Railway inject PORT at runtime; default to 8000 locally
-ENV PORT=8000
-
-EXPOSE 8000
+ENV PORT=7860
+EXPOSE 7860
 
 CMD uvicorn app:app --host 0.0.0.0 --port ${PORT}
