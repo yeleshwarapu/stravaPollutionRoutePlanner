@@ -526,28 +526,25 @@
     .env-badge:nth-child(odd) { border-right: 1px solid var(--border); }
     .env-badge:nth-child(3), .env-badge:nth-child(4) { border-bottom: none; }
 
-    /* Full-screen panels — toggled by JS via .mobile-active */
-    .layout { position: relative; flex: 1; overflow: hidden; }
+    /* Full-screen panels — toggled by JS via display show/hide */
+    .layout { position: relative; flex: 1; min-height: 0; }
     .sidebar {
       position: absolute; inset: 0;
       width: 100%; border-right: none;
-      transform: translateX(0);
-      transition: transform .3s cubic-bezier(.4,0,.2,1);
-      z-index: 2;
+      display: flex; flex-direction: column;
       overflow: hidden;
+      z-index: 2;
+      transition: opacity .2s;
     }
     .sidebar.mobile-hidden {
-      transform: translateX(-100%);
-      pointer-events: none;
+      display: none;
     }
     .map-panel {
       position: absolute; inset: 0;
-      transform: translateX(100%);
-      transition: transform .3s cubic-bezier(.4,0,.2,1);
-      z-index: 1;
+      display: none;
     }
     .map-panel.mobile-active {
-      transform: translateX(0);
+      display: block;
     }
 
     /* Sidebar scroll gets full height */
@@ -596,8 +593,11 @@
     .mobile-tab.active .tab-icon { filter: drop-shadow(0 0 6px rgba(232,164,62,.5)); }
   }
 
-  /* Hide tab bar on desktop */
+  /* Hide tab bar on desktop — mobile media query overrides this */
   .mobile-tabs { display: none; }
+  @media (max-width: 680px) {
+    .mobile-tabs { display: flex !important; }
+  }
 </style>
 </head>
 <body>
@@ -1116,6 +1116,16 @@ function renderResult(result) {
   const wrap = document.getElementById('routes-wrap');
   wrap.innerHTML = '';
 
+  // On mobile, inject a prominent "View Map" button at the top of results
+  if (window.innerWidth <= 680) {
+    const mapBtn = document.createElement('button');
+    mapBtn.className = 'plan-btn';
+    mapBtn.style.cssText = 'background:var(--teal);margin-bottom:16px;margin-top:0';
+    mapBtn.textContent = 'View Map →';
+    mapBtn.onclick = () => switchTab('map');
+    wrap.appendChild(mapBtn);
+  }
+
   // Group by target distance
   const byDist = {};
   result.routes.forEach(r => {
@@ -1150,12 +1160,18 @@ function switchTab(tab) {
   const mapPanel = document.querySelector('.map-panel');
   const tabPlan  = document.getElementById('tab-plan');
   const tabMap   = document.getElementById('tab-map');
+  if (!tabPlan || !tabMap) return; // not on mobile / tabs not in DOM yet
 
   if (tab === 'map') {
     sidebar.classList.add('mobile-hidden');
     mapPanel.classList.add('mobile-active');
     tabPlan.classList.remove('active');
     tabMap.classList.add('active');
+    // Make sure the map iframe is visible
+    const frame = document.getElementById('map-frame');
+    if (frame && frame.srcdoc && !frame.classList.contains('visible')) {
+      frame.classList.add('visible');
+    }
   } else {
     sidebar.classList.remove('mobile-hidden');
     mapPanel.classList.remove('mobile-active');
