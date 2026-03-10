@@ -188,9 +188,9 @@ def _run_plan(job_id: str, req: PlanRequest):
             G = _graph_cache[cache_key]
         else:
             max_dist = max(req.distances)
-            log(f"Downloading {req.network} network within {max_dist * 0.75:.1f} mi…")
+            log(f"Downloading {req.network} network within {max_dist * 0.6:.1f} mi…")
             from routing.network import download_network
-            G = download_network(lat, lon, max_dist * 0.75, req.network)
+            G = download_network(lat, lon, max_dist * 0.6, req.network)
             _graph_cache[cache_key] = G
             log(f"  Network: {len(G.nodes):,} nodes, {len(G.edges):,} edges")
 
@@ -205,7 +205,7 @@ def _run_plan(job_id: str, req: PlanRequest):
         else:
             max_dist = max(req.distances)
             log("Fetching tree cover data…")
-            shade_polys = download_shade_features(lat, lon, max_dist * 0.75)
+            shade_polys = download_shade_features(lat, lon, max_dist * 0.6)
             _graph_cache[shade_cache_key] = shade_polys
             log(f"  Found {len(shade_polys)} shade features")
 
@@ -257,13 +257,13 @@ def _run_plan(job_id: str, req: PlanRequest):
         log("Building map…")
 
         # Convert shade polys to GeoJSON for the map.
-        # Polys are already simplified in download_shade_features; we further
-        # cap the map overlay at 150 polygons — more than that slows the browser
-        # without adding meaningful visual fidelity.
+        # Polys are already simplified in download_shade_features so vertex
+        # counts are low. Cap the browser overlay at 500 — enough to show all
+        # neighbourhood parks without overwhelming Leaflet.
         shade_geojson = []
         try:
             from shapely.geometry import mapping
-            for poly in shade_polys[:150]:
+            for poly in shade_polys[:500]:
                 try:
                     shade_geojson.append(mapping(poly))
                 except Exception:

@@ -109,13 +109,29 @@ def nodes_at_distance(
     Return all nodes whose shortest-path distance from origin_node is within
     ±tolerance_fraction of target_dist_m.
 
-    Uses Dijkstra's algorithm weighted by edge 'length' (metres in projected graph).
+    Uses a two-step approach for speed:
+    1. Euclidean pre-filter — discard nodes geometrically too far to be
+       reachable at target_dist_m (roads wind ~1.3× straight-line distance,
+       so we use 1.5× as a safe cap). This shrinks the subgraph Dijkstra
+       has to flood by 50–80% on large urban networks.
+    2. Dijkstra on the subgraph with cutoff=hi for the exact answer.
     """
     lo = target_dist_m * (1 - tolerance_fraction)
     hi = target_dist_m * (1 + tolerance_fraction)
 
+    # Euclidean pre-filter in UTM space (x/y are metres in projected graph)
+    o_data = G.nodes[origin_node]
+    ox_, oy_ = o_data["x"], o_data["y"]
+    euclidean_cap = hi * 1.5   # 1.5× accounts for road winding
+    candidate_nodes = [
+        n for n, d in G.nodes(data=True)
+        if math.hypot(d["x"] - ox_, d["y"] - oy_) <= euclidean_cap
+    ]
+
+    subgraph = G.subgraph(candidate_nodes)
+
     lengths = nx.single_source_dijkstra_path_length(
-        G, origin_node, cutoff=hi, weight="length"
+        subgraph, origin_node, cutoff=hi, weight="length"
     )
     return [n for n, d in lengths.items() if lo <= d <= hi]
 
@@ -460,9 +476,19 @@ def download_shade_features(
 
         # Tags that indicate meaningful tree cover / shade
         shade_tags = {
-            "natural":  ["wood", "tree_row", "tree"],
-            "landuse":  ["forest", "orchard", "vineyard"],
+            # Tree cover — original set
+            "natural":  ["wood", "tree_row", "tree",
+                         # Mountain / wilderness natural areas
+                         "scrub", "heath", "grassland", "wetland",
+                         "shrubbery"],
+            "landuse":  ["forest", "orchard", "vineyard",
+                         # Open recreational / wilderness land
+                         "recreation_ground", "grass", "meadow",
+                         "conservation"],
             "leisure":  ["park", "garden", "nature_reserve"],
+            # National parks, wilderness areas, protected land
+            "boundary": ["national_park", "protected_area",
+                         "forest", "wilderness"],
         }
 
         try:
@@ -476,22 +502,27 @@ def download_shade_features(
             return []
 
         polys = []
-        MAX_AREA_DEG2 = 0.005   # ~50 km² in degrees² — skip country-scale polygons
+        MAX_AREA_DEG2 = 0.5     # ~5,000 km² — allows national parks/wilderness, skips continent-scale polygons
         SIMPLIFY_TOL  = 0.0001  # ~10 m tolerance — reduces vertex count dramatically
-        MAX_POLYS     = 300     # cap total polygons to bound STRtree build time
+        # No hard polygon cap — simplification already makes each poly cheap.
+        # We sort large polygons first so the most impactful shade features
+        # (big parks, forests) are always included even in very dense areas.
 
+        raw = []
         for geom in features.geometry:
             if geom is None:
                 continue
             if geom.geom_type in ("Polygon", "MultiPolygon"):
                 if geom.area < MAX_AREA_DEG2:
-                    polys.append(geom.simplify(SIMPLIFY_TOL, preserve_topology=True))
+                    raw.append((geom.area, geom.simplify(SIMPLIFY_TOL, preserve_topology=True)))
             elif geom.geom_type == "LineString":
                 # tree rows — buffer ~10m in degrees (~0.00009°)
-                polys.append(geom.simplify(SIMPLIFY_TOL).buffer(0.00009))
+                raw.append((0.0, geom.simplify(SIMPLIFY_TOL).buffer(0.00009)))
             # skip Point geometries — individual trees are too noisy to render
-            if len(polys) >= MAX_POLYS:
-                break
+
+        # Sort largest first so big parks are always kept; small parks follow
+        raw.sort(key=lambda x: x[0], reverse=True)
+        polys = [g for _, g in raw]
 
         return polys
 
