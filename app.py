@@ -131,8 +131,12 @@ def elevation_matches(gain_ft: float, length_miles: float, difficulty: str) -> b
 def _run_plan(job_id: str, req: PlanRequest):
     job = _jobs[job_id]
 
-    def log(msg: str):
+    import time as _time
+
+    def log(msg: str, step: str = "", eta: int = 0):
         job["messages"].append(msg)
+        if step:
+            job["current_step"] = {"name": step, "eta": eta, "t": _time.time()}
 
     def fail(msg: str):
         job["status"] = "error"
@@ -158,25 +162,32 @@ def _run_plan(job_id: str, req: PlanRequest):
         )
 
         # 3. Environmental conditions
-        log("Fetching environmental conditions…")
+        log("Fetching environmental conditions…", step="env", eta=4)
         uv_window = None
         try:
-            from data.uv_data import best_window_today, get_current_uv, uv_category
+            from data.uv_data import uv_window_description, get_current_uv, uv_category
             from data.air_quality import get_current_pm25, pm25_to_aqi_category
             uv_now    = get_current_uv(lat, lon)
             uv_lab, _ = uv_category(uv_now)
-            uv_window = best_window_today(lat, lon)
+            uv_desc   = uv_window_description(lat, lon)
+            uv_window = uv_desc["best_window"]
             pm25_now  = get_current_pm25(lat, lon)
             aq_lab, _ = pm25_to_aqi_category(pm25_now)
             log(f"  UV now     : {uv_now:.1f} ({uv_lab})")
-            log(f"  Best window: {uv_window[0]:02d}:00–{uv_window[1]:02d}:00")
+            log(f"  Best window: {uv_desc['window_label']} (UV {uv_desc['window_uv']}, {uv_desc['window_category']})")
+            log(f"  UV peak    : {uv_desc['peak_label']} — {uv_desc['peak_uv']} ({uv_desc['peak_category']})")
             log(f"  PM2.5 now  : {pm25_now:.1f} μg/m³ ({aq_lab})")
             job["env"] = {
-                "uv":        uv_now,
-                "uv_label":  uv_lab,
-                "uv_window": f"{uv_window[0]:02d}:00–{uv_window[1]:02d}:00",
-                "pm25":      pm25_now,
-                "aq_label":  aq_lab,
+                "uv":             uv_now,
+                "uv_label":       uv_lab,
+                "uv_window":      uv_desc["window_label"],
+                "uv_window_uv":   uv_desc["window_uv"],
+                "uv_advice":      uv_desc["advice"],
+                "uv_peak_label":  uv_desc["peak_label"],
+                "uv_peak_uv":     uv_desc["peak_uv"],
+                "uv_peak_cat":    uv_desc["peak_category"],
+                "pm25":           pm25_now,
+                "aq_label":       aq_lab,
             }
         except Exception as e:
             log(f"  Environmental fetch failed: {e}")
@@ -184,11 +195,11 @@ def _run_plan(job_id: str, req: PlanRequest):
         # 4. Road network (cached)
         cache_key = f"{round(lat,3)},{round(lon,3)},{req.network}"
         if cache_key in _graph_cache:
-            log("Loading cached road network…")
+            log("Loading cached road network…", step="network", eta=2)
             G = _graph_cache[cache_key]
         else:
             max_dist = max(req.distances)
-            log(f"Downloading {req.network} network within {max_dist * 0.6:.1f} mi…")
+            log(f"Downloading {req.network} network within {max_dist * 0.6:.1f} mi…", step="network", eta=30)
             from routing.network import download_network
             G = download_network(lat, lon, max_dist * 0.6, req.network)
             _graph_cache[cache_key] = G
@@ -204,7 +215,7 @@ def _run_plan(job_id: str, req: PlanRequest):
             shade_polys = _graph_cache[shade_cache_key]
         else:
             max_dist = max(req.distances)
-            log("Fetching tree cover data…")
+            log("Fetching tree cover data…", step="shade", eta=10)
             shade_polys = download_shade_features(lat, lon, max_dist * 0.6)
             _graph_cache[shade_cache_key] = shade_polys
             log(f"  Found {len(shade_polys)} shade features")
@@ -222,7 +233,7 @@ def _run_plan(job_id: str, req: PlanRequest):
             if not candidates:
                 continue
 
-            log(f"  Scoring routes…")
+            log(f"  Scoring routes…", step="scoring", eta=max(3, len(candidates) // 2))
             scored = score_all(
                 candidates, cfg, origin_lat, origin_lon,
                 max_candidates=cfg.max_candidates,
@@ -254,7 +265,7 @@ def _run_plan(job_id: str, req: PlanRequest):
             return
 
         # 6. Build map → capture HTML string
-        log("Building map…")
+        log("Building map…", step="map", eta=2)
 
         # Convert shade polys to GeoJSON for the map.
         # Polys are already simplified in download_shade_features so vertex
@@ -375,10 +386,11 @@ async def job_status(job_id: str):
     if not job:
         return JSONResponse({"error": "Job not found"}, status_code=404)
     return {
-        "status":   job["status"],
-        "messages": job["messages"],
-        "result":   job["result"],
-        "error":    job.get("error"),
+        "status":       job["status"],
+        "messages":     job["messages"],
+        "result":       job["result"],
+        "error":        job.get("error"),
+        "current_step": job.get("current_step"),
     }
 
 

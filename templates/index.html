@@ -525,11 +525,11 @@
     .topbar-sub { display: none; }
     .topbar-status { font-size: 9px; gap: 5px; }
 
-    /* Env strip — 2×2 grid instead of single row */
+    /* Env strip — 2-col grid; advice row spans full width */
     .env-strip.visible { display: grid; grid-template-columns: 1fr 1fr; }
     .env-badge { border-right: none; border-bottom: 1px solid var(--border); padding: 6px 12px; }
     .env-badge:nth-child(odd) { border-right: 1px solid var(--border); }
-    .env-badge:nth-child(3), .env-badge:nth-child(4) { border-bottom: none; }
+    #env-advice-badge { grid-column: 1 / -1; border-right: none; }
 
     /* Full-screen panels — toggled by JS via display show/hide */
     .layout { position: relative; flex: 1; min-height: 0; }
@@ -631,9 +631,14 @@
 <!-- ── Env badges ── -->
 <div class="env-strip" id="env-strip">
   <div class="env-badge"><div class="env-badge-label">Air Quality</div><div class="env-badge-val" id="env-aq">—</div></div>
-  <div class="env-badge"><div class="env-badge-label">UV Index</div><div class="env-badge-val" id="env-uv">—</div></div>
-  <div class="env-badge"><div class="env-badge-label">Best Window</div><div class="env-badge-val" id="env-window">—</div></div>
-  <div class="env-badge"><div class="env-badge-label">Location</div><div class="env-badge-val" id="env-loc" style="font-size:10px;color:var(--text-muted)">—</div></div>
+  <div class="env-badge"><div class="env-badge-label">UV Index Now</div><div class="env-badge-val" id="env-uv">—</div></div>
+  <div class="env-badge"><div class="env-badge-label">Best Ride Window</div><div class="env-badge-val" id="env-window" style="font-size:11px">—</div></div>
+  <div class="env-badge"><div class="env-badge-label">Peak UV</div><div class="env-badge-val" id="env-peak" style="font-size:11px">—</div></div>
+  <div class="env-badge" id="env-advice-badge" style="display:none;flex:none;width:100%;border-right:none;border-top:1px solid var(--border)">
+    <div class="env-badge-label">Recommendation</div>
+    <div class="env-badge-val" id="env-advice" style="font-size:11px;color:var(--teal);font-family:'DM Mono',monospace;font-weight:400;white-space:normal;line-height:1.5">—</div>
+  </div>
+  <div class="env-badge" style="border-right:none"><div class="env-badge-label">Location</div><div class="env-badge-val" id="env-loc" style="font-size:10px;color:var(--text-muted)">—</div></div>
 </div>
 
 <!-- ── Layout ── -->
@@ -714,7 +719,13 @@
     <div class="map-placeholder" id="map-loading" style="display:none">
       <div class="spin-wrap"><div class="spin-ring"></div></div>
       <div class="map-placeholder-text" style="font-size:clamp(18px,2vw,28px)">Building routes…</div>
-      <div class="map-placeholder-sub" id="loading-msg">Downloading road network</div>
+      <div class="map-placeholder-sub" id="loading-msg">Starting up</div>
+      <div id="eta-wrap" style="display:none;flex-direction:column;align-items:center;gap:8px;width:220px">
+        <div style="width:100%;height:2px;background:var(--border);border-radius:1px;overflow:hidden">
+          <div id="eta-bar" style="height:100%;width:0%;background:var(--amber);transition:width 1s linear;border-radius:1px"></div>
+        </div>
+        <div id="eta-label" style="font-size:10px;color:var(--amber);letter-spacing:.12em;text-transform:uppercase"></div>
+      </div>
     </div>
     <iframe id="map-frame" title="Route map" sandbox="allow-scripts allow-same-origin"></iframe>
   </main>
@@ -1011,6 +1022,61 @@ function dlGpx(gpx_id, e) {
   setTimeout(() => window.open('https://www.strava.com/routes/new', '_blank'), 300);
 }
 
+// ── ETA countdown ────────────────────────────────────────────────────────────
+let _etaTimer = null;
+let _etaStart = 0;
+let _etaTotal = 0;
+
+const STEP_LABELS = {
+  env:     'Checking conditions',
+  network: 'Downloading road network',
+  shade:   'Fetching tree cover',
+  scoring: 'Scoring routes',
+  map:     'Building map',
+};
+
+function updateEta(step) {
+  const wrap  = document.getElementById('eta-wrap');
+  const bar   = document.getElementById('eta-bar');
+  const label = document.getElementById('eta-label');
+  if (!wrap) return;
+
+  const eta = step.eta || 0;
+  if (eta <= 0) { wrap.style.display = 'none'; return; }
+
+  // Reset for new step
+  clearEta();
+  _etaTotal = eta;
+  _etaStart = Date.now();
+  wrap.style.display = 'flex';
+
+  const stepName = STEP_LABELS[step.name] || step.name;
+
+  function tick() {
+    const elapsed = (Date.now() - _etaStart) / 1000;
+    const remaining = Math.max(0, _etaTotal - elapsed);
+    const pct = Math.min(100, (elapsed / _etaTotal) * 100);
+    bar.style.width = pct + '%';
+    if (remaining > 1) {
+      label.textContent = stepName + ' · ~' + Math.ceil(remaining) + 's';
+    } else {
+      label.textContent = stepName + ' · almost done…';
+    }
+    if (remaining > 0) {
+      _etaTimer = requestAnimationFrame(tick);
+    }
+  }
+  _etaTimer = requestAnimationFrame(tick);
+}
+
+function clearEta() {
+  if (_etaTimer) { cancelAnimationFrame(_etaTimer); _etaTimer = null; }
+  const wrap = document.getElementById('eta-wrap');
+  const bar  = document.getElementById('eta-bar');
+  if (wrap) wrap.style.display = 'none';
+  if (bar)  bar.style.width = '0%';
+}
+
 // ── Plan ─────────────────────────────────────────────────────────────────────
 let pollTimer = null;
 
@@ -1070,10 +1136,14 @@ async function startPlan() {
       const newMsgs = d.messages.slice(seenMsgCount);
       newMsgs.forEach((m, i) => {
         termLog(m, i === newMsgs.length - 1 && d.status === 'running' ? 'new' : '');
-        // Update loading label with last message
         document.getElementById('loading-msg').textContent = m.replace(/^\s+/, '');
       });
       seenMsgCount = d.messages.length;
+
+      // ETA countdown from current_step
+      if (d.current_step && d.status === 'running') {
+        updateEta(d.current_step);
+      }
 
       if (d.status === 'done') {
         clearInterval(pollTimer);
@@ -1110,12 +1180,25 @@ function renderResult(result) {
 
   // Env strip
   if (result.env && result.env.aq_label) {
-    document.getElementById('env-aq').textContent    = result.env.aq_label + ' (' + result.env.pm25.toFixed(1) + ')';
-    document.getElementById('env-uv').textContent    = result.env.uv_label + ' (' + result.env.uv.toFixed(1) + ')';
+    document.getElementById('env-aq').textContent     = result.env.aq_label + ' (' + result.env.pm25.toFixed(1) + ' μg/m³)';
+    document.getElementById('env-uv').textContent     = result.env.uv_label + ' (' + result.env.uv.toFixed(1) + ')';
     document.getElementById('env-window').textContent = result.env.uv_window || '—';
+    const peakEl = document.getElementById('env-peak');
+    if (result.env.uv_peak_uv != null) {
+      peakEl.textContent = result.env.uv_peak_label + ' — ' + result.env.uv_peak_uv + ' (' + result.env.uv_peak_cat + ')';
+    }
+    const adviceEl  = document.getElementById('env-advice');
+    const adviceBox = document.getElementById('env-advice-badge');
+    if (result.env.uv_advice) {
+      adviceEl.textContent = result.env.uv_advice;
+      adviceBox.style.display = '';
+    }
     document.getElementById('env-loc').textContent   = result.address.split(',').slice(0,2).join(',');
     document.getElementById('env-strip').classList.add('visible');
   }
+
+  // Clear ETA display
+  clearEta();
 
   // Show the routes panel (hidden by default on mobile)
   const panelRoutes = document.getElementById('panel-routes');

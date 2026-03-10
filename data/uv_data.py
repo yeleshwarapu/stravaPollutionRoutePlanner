@@ -106,10 +106,17 @@ def uv_category(uv: float) -> tuple[str, str]:
         return "Extreme", "#6b49c8"
 
 
+def _fmt_hour(h: int) -> str:
+    """Format hour 0-23 as human-friendly 12h string, e.g. 7 -> '7am', 14 -> '2pm'."""
+    if h == 0:   return "12am"
+    if h == 12:  return "12pm"
+    if h < 12:   return f"{h}am"
+    return f"{h - 12}pm"
+
+
 def best_window_today(lat: float, lon: float) -> tuple[int, int]:
     """
-    Return (start_hour, end_hour) of the lowest-UV window in a
-    4-hour block today (good for planning when to ride).
+    Return (start_hour, end_hour) of the lowest-UV 4-hour window today.
     """
     data   = _fetch_raw(lat, lon)
     times  = data["hourly"].get("time", [])
@@ -117,7 +124,7 @@ def best_window_today(lat: float, lon: float) -> tuple[int, int]:
     is_day = data["hourly"].get("is_day", [1] * len(times))
 
     windows = []
-    for start in range(0, 20):  # windows from hour 0 to hour 20
+    for start in range(0, 20):
         block_uvs = []
         for offset in range(4):
             idx = start + offset
@@ -127,10 +134,87 @@ def best_window_today(lat: float, lon: float) -> tuple[int, int]:
             windows.append((start, float(np.mean(block_uvs))))
 
     if not windows:
-        return (7, 11)  # sensible default: early morning
+        return (7, 11)
 
     best = min(windows, key=lambda x: x[1])
     return (best[0], best[0] + 4)
+
+
+def uv_window_description(lat: float, lon: float) -> dict:
+    """
+    Return a rich description of today's UV conditions including:
+    - best_window: (start_hour, end_hour)
+    - window_uv: average UV index during best window
+    - peak_hour: hour with highest UV today
+    - peak_uv: UV index at peak
+    - window_label: e.g. "7am – 11am"
+    - peak_label: e.g. "2pm"
+    - advice: plain-English recommendation
+    - window_category: UV label for the window
+    - peak_category: UV label for the peak
+    """
+    data   = _fetch_raw(lat, lon)
+    times  = data["hourly"].get("time", [])
+    uvs    = data["hourly"].get("uv_index", [])
+    is_day = data["hourly"].get("is_day", [1] * len(times))
+
+    # Find best 4h window
+    windows = []
+    for start in range(0, 20):
+        block_uvs = []
+        for offset in range(4):
+            idx = start + offset
+            if idx < len(uvs) and uvs[idx] is not None and is_day[idx]:
+                block_uvs.append(uvs[idx])
+        if block_uvs:
+            windows.append((start, float(np.mean(block_uvs))))
+
+    if not windows:
+        start_h, window_uv = 7, 2.0
+    else:
+        best = min(windows, key=lambda x: x[1])
+        start_h, window_uv = best
+
+    end_h = int(start_h) + 4
+
+    # Find peak UV hour (daytime only)
+    peak_uv, peak_hour = 0.0, 12
+    for i, (uv, day) in enumerate(zip(uvs, is_day)):
+        if day and uv is not None and uv > peak_uv:
+            peak_uv = float(uv)
+            # derive hour from index (hourly data starts at hour 0)
+            try:
+                peak_hour = datetime.datetime.fromisoformat(times[i]).hour
+            except Exception:
+                peak_hour = i % 24
+
+    win_cat, _ = uv_category(window_uv)
+    peak_cat, _ = uv_category(peak_uv)
+
+    # Build plain-English advice
+    window_str = f"{_fmt_hour(int(start_h))} – {_fmt_hour(end_h)}"
+    peak_str   = _fmt_hour(peak_hour)
+
+    if window_uv < 3:
+        advice = f"Safe to ride anytime — UV stays Low. Best window {window_str}."
+    elif window_uv < 6:
+        advice = f"Ride {window_str} for Moderate UV. Peak {peak_uv:.0f} ({peak_cat}) around {peak_str} — sunscreen advised."
+    elif window_uv < 8:
+        advice = f"Ride early — best window {window_str} (UV {window_uv:.0f}). Avoid {peak_str} when UV hits {peak_uv:.0f} ({peak_cat})."
+    else:
+        advice = f"High UV day. Safest window {window_str} (UV {window_uv:.0f}). Peak {peak_uv:.0f} ({peak_cat}) around {peak_str} — cover up."
+
+    return {
+        "best_window":      (int(start_h), end_h),
+        "window_uv":        round(window_uv, 1),
+        "peak_hour":        peak_hour,
+        "peak_uv":          round(peak_uv, 1),
+        "window_label":     window_str,
+        "peak_label":       peak_str,
+        "window_category":  win_cat,
+        "peak_category":    peak_cat,
+        "advice":           advice,
+    }
 
 
 def normalise_uv(uv: float, ceiling: float = 11.0) -> float:
