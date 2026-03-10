@@ -508,11 +508,96 @@
   @media (max-width: 900px) {
     :root { --sidebar-w: 340px; }
   }
+
+  /* ── Mobile (≤ 680px) ── */
   @media (max-width: 680px) {
-    .layout { flex-direction: column; }
-    .sidebar { width: 100%; border-right: none; border-bottom: 1px solid var(--border); max-height: 55vh; }
-    .map-panel { min-height: 45vh; }
+    /* Hide custom cursor on touch */
+    .cursor { display: none !important; }
+    body { cursor: auto !important; overflow: hidden; }
+
+    /* Compact topbar */
+    .topbar { padding: 0 16px; height: 46px; }
+    .topbar-sub { display: none; }
+    .topbar-status { font-size: 9px; gap: 5px; }
+
+    /* Env strip — 2×2 grid instead of single row */
+    .env-strip.visible { display: grid; grid-template-columns: 1fr 1fr; }
+    .env-badge { border-right: none; border-bottom: 1px solid var(--border); padding: 6px 12px; }
+    .env-badge:nth-child(odd) { border-right: 1px solid var(--border); }
+    .env-badge:nth-child(3), .env-badge:nth-child(4) { border-bottom: none; }
+
+    /* Full-screen panels — toggled by JS via .mobile-active */
+    .layout { position: relative; flex: 1; overflow: hidden; }
+    .sidebar {
+      position: absolute; inset: 0;
+      width: 100%; border-right: none;
+      transform: translateX(0);
+      transition: transform .3s cubic-bezier(.4,0,.2,1);
+      z-index: 2;
+      overflow: hidden;
+    }
+    .sidebar.mobile-hidden {
+      transform: translateX(-100%);
+      pointer-events: none;
+    }
+    .map-panel {
+      position: absolute; inset: 0;
+      transform: translateX(100%);
+      transition: transform .3s cubic-bezier(.4,0,.2,1);
+      z-index: 1;
+    }
+    .map-panel.mobile-active {
+      transform: translateX(0);
+    }
+
+    /* Sidebar scroll gets full height */
+    .sidebar-scroll { padding: 16px; }
+
+    /* Prevent iOS zoom on input focus — min font-size 16px */
+    .addr-input { font-size: 16px; }
+    input[type=range] { height: 4px; }
+    input[type=range]::-webkit-slider-thumb {
+      width: 22px; height: 22px; margin-top: -9px;
+    }
+
+    /* Larger touch targets for elevation buttons */
+    .elev-btn { padding: 12px 4px; font-size: 11px; }
+    .elev-btn .elev-icon { font-size: 16px; }
+
+    /* Bigger plan button */
+    .plan-btn { padding: 16px 0; font-size: 13px; margin-bottom: 20px; }
+
+    /* Route cards — slightly more compact */
+    .route-card { padding: 14px; }
+    .card-grade { font-size: 22px; }
+    .card-score { font-size: 16px; }
+    .card-bars { display: none; } /* hide bars on mobile to save space */
+
+    /* Bottom tab bar */
+    .mobile-tabs {
+      display: flex;
+      height: 54px;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      flex-shrink: 0;
+      z-index: 100;
+    }
+    .mobile-tab {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 3px;
+      font-size: 9px; letter-spacing: .12em; text-transform: uppercase;
+      color: var(--text-dim);
+      border: none; background: transparent;
+      transition: color .2s;
+      cursor: pointer;
+    }
+    .mobile-tab .tab-icon { font-size: 18px; line-height: 1; }
+    .mobile-tab.active { color: var(--amber); }
+    .mobile-tab.active .tab-icon { filter: drop-shadow(0 0 6px rgba(232,164,62,.5)); }
   }
+
+  /* Hide tab bar on desktop */
+  .mobile-tabs { display: none; }
 </style>
 </head>
 <body>
@@ -634,13 +719,32 @@
 
 </div>
 
+<!-- ── Mobile tab bar (hidden on desktop via CSS) ── -->
+<div class="mobile-tabs" id="mobile-tabs">
+  <button class="mobile-tab active" id="tab-plan" onclick="switchTab('plan')">
+    <span class="tab-icon">⊕</span>Plan
+  </button>
+  <button class="mobile-tab" id="tab-map" onclick="switchTab('map')">
+    <span class="tab-icon">◎</span>Map
+  </button>
+</div>
+
 <script>
 // ── Cursor ───────────────────────────────────────────────────────────────────
 const dot = document.querySelector('.cursor-dot');
 const ring = document.querySelector('.cursor-ring');
 let mx = 0, my = 0, rx = 0, ry = 0;
 
+// Only activate custom cursor on non-touch devices
+const isTouchDevice = () => window.matchMedia('(hover: none)').matches;
+if (isTouchDevice()) {
+  document.body.style.cursor = 'auto';
+  dot.style.display = 'none';
+  ring.style.display = 'none';
+}
+
 document.addEventListener('mousemove', e => {
+  if (isTouchDevice()) return;
   mx = e.clientX; my = e.clientY;
   dot.style.left = mx + 'px'; dot.style.top = my + 'px';
 });
@@ -994,6 +1098,11 @@ function renderResult(result) {
   frame.srcdoc = result.map_html;
   frame.classList.add('visible');
 
+  // On mobile, auto-switch to the map tab once routes are ready
+  if (window.innerWidth <= 680) {
+    setTimeout(() => switchTab('map'), 400);
+  }
+
   // Env strip
   if (result.env && result.env.aq_label) {
     document.getElementById('env-aq').textContent    = result.env.aq_label + ' (' + result.env.pm25.toFixed(1) + ')';
@@ -1034,6 +1143,29 @@ document.getElementById('plan-btn').addEventListener('click', startPlan);
 document.getElementById('addr-input').addEventListener('keydown', e => {
   if (e.key === 'Enter' && e.ctrlKey) startPlan();
 });
+
+// ── Mobile tab switching ──────────────────────────────────────────────────────
+function switchTab(tab) {
+  const sidebar  = document.querySelector('.sidebar');
+  const mapPanel = document.querySelector('.map-panel');
+  const tabPlan  = document.getElementById('tab-plan');
+  const tabMap   = document.getElementById('tab-map');
+
+  if (tab === 'map') {
+    sidebar.classList.add('mobile-hidden');
+    mapPanel.classList.add('mobile-active');
+    tabPlan.classList.remove('active');
+    tabMap.classList.add('active');
+  } else {
+    sidebar.classList.remove('mobile-hidden');
+    mapPanel.classList.remove('mobile-active');
+    tabPlan.classList.add('active');
+    tabMap.classList.remove('active');
+  }
+}
+
+// Auto-switch to map tab on mobile when results arrive
+// (injected into renderResult via the mobile-tabs check below)
 </script>
 </body>
 </html>
