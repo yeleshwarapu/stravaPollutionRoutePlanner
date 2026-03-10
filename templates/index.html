@@ -632,7 +632,6 @@
 <!-- ── Env badges ── -->
 <div class="env-strip" id="env-strip">
   <div class="env-badge"><div class="env-badge-label">Air Quality</div><div class="env-badge-val" id="env-aq">—</div></div>
-  <div class="env-badge"><div class="env-badge-label">Ozone</div><div class="env-badge-val" id="env-ozone">—</div></div>
   <div class="env-badge"><div class="env-badge-label">UV Index Now</div><div class="env-badge-val" id="env-uv">—</div></div>
   <div class="env-badge"><div class="env-badge-label">Best Ride Window</div><div class="env-badge-val" id="env-window" style="font-size:11px">—</div></div>
   <div class="env-badge"><div class="env-badge-label">Peak UV</div><div class="env-badge-val" id="env-peak" style="font-size:11px">—</div></div>
@@ -988,7 +987,6 @@ function buildCard(r, index) {
     <div class="card-title">${r.target_miles} mi · ${r.direction} loop — ${r.miles} mi actual</div>
     <div class="card-meta">
       <div class="meta-item"><strong>PM2.5</strong><span class="${aqColour(r.aqi_label)}">${r.pm25} μg/m³ (${r.aqi_label})</span></div>
-      <div class="meta-item"><strong>Ozone</strong><span class="${aqColour(r.ozone_label)}">${r.ozone} μg/m³ (${r.ozone_label})</span></div>
       <div class="meta-item"><strong>UV Index</strong>${r.uv} (${r.uv_label})</div>
       <div class="meta-item"><strong>Loop</strong>${r.loop_pct}%</div>
       <div class="meta-item"><strong>Paved</strong>${r.paved_pct}%</div>
@@ -996,9 +994,7 @@ function buildCard(r, index) {
       ${elevHtml}
     </div>
     <div class="card-bars">
-      <div class="bar-row"><span class="bar-label">PM2.5</span><div class="bar-track"><div class="bar-fill aq" style="width:0%" data-w="${r.score_breakdown?.pm25 ?? r.score}%"></div></div><span class="bar-pct">${r.score_breakdown?.pm25 ?? r.score}%</span></div>
-      <div class="bar-row"><span class="bar-label">Ozone</span><div class="bar-track"><div class="bar-fill aq" style="width:0%" data-w="${r.score_breakdown?.ozone ?? r.score}%"></div></div><span class="bar-pct">${r.score_breakdown?.ozone ?? r.score}%</span></div>
-      <div class="bar-row"><span class="bar-label">UV</span><div class="bar-track"><div class="bar-fill shade" style="width:0%" data-w="${r.score_breakdown?.uv ?? r.score}%"></div></div><span class="bar-pct">${r.score_breakdown?.uv ?? r.score}%</span></div>
+      <div class="bar-row"><span class="bar-label">AQ</span><div class="bar-track"><div class="bar-fill aq" style="width:0%" data-w="${r.score}%"></div></div><span class="bar-pct">${r.score}%</span></div>
       <div class="bar-row"><span class="bar-label">Loop</span><div class="bar-track"><div class="bar-fill loop" style="width:0%" data-w="${r.loop_pct}%"></div></div><span class="bar-pct">${r.loop_pct}%</span></div>
       <div class="bar-row"><span class="bar-label">Paved</span><div class="bar-track"><div class="bar-fill paved" style="width:0%" data-w="${r.paved_pct}%"></div></div><span class="bar-pct">${r.paved_pct}%</span></div>
       <div class="bar-row"><span class="bar-label">Shade</span><div class="bar-track"><div class="bar-fill shade" style="width:0%" data-w="${r.shade_pct ?? 0}%"></div></div><span class="bar-pct">${r.shade_pct ?? 0}%</span></div>
@@ -1215,9 +1211,6 @@ function renderResult(result) {
   if (result.env && result.env.aq_label) {
     document.getElementById('env-aq').textContent     = result.env.aq_label + ' (' + result.env.pm25.toFixed(1) + ' μg/m³)';
     document.getElementById('env-uv').textContent     = result.env.uv_label + ' (' + result.env.uv.toFixed(1) + ')';
-    if (result.env.ozone != null) {
-      document.getElementById('env-ozone').textContent = result.env.ozone_label + ' (' + result.env.ozone.toFixed(1) + ' μg/m³)';
-    }
     document.getElementById('env-window').textContent = result.env.uv_window || '—';
     const peakEl = document.getElementById('env-peak');
     if (result.env.uv_peak_uv != null) {
@@ -1261,12 +1254,19 @@ function renderResult(result) {
   });
 
   // Scroll sidebar to results
-  // On desktop scroll plan panel to terminal; on mobile we already switched tab
+  // On desktop the sidebar itself scrolls — scroll it to show the routes panel.
+  // On mobile we already switched tab above.
   if (window.innerWidth > 680) {
-    document.getElementById('panel-plan').scrollTo({
-      top: terminal.offsetTop - 16,
-      behavior: 'smooth',
-    });
+    const sidebar = document.querySelector('.sidebar');
+    const panelRoutesEl = document.getElementById('panel-routes');
+    if (sidebar && panelRoutesEl) {
+      setTimeout(() => {
+        sidebar.scrollTo({
+          top: panelRoutesEl.offsetTop - 16,
+          behavior: 'smooth',
+        });
+      }, 50); // small delay lets the DOM finish rendering cards first
+    }
   }
 }
 

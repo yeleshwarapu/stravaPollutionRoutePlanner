@@ -36,8 +36,8 @@ class Config:
 
     # ── Scoring weights (must sum to 1.0) ───────────────────
     weight_pm25:   float = 0.20   # PM2.5 air quality
-    weight_ozone:  float = 0.10   # ozone air quality
-    weight_uv:     float = 0.20   # UV exposure
+    weight_ozone:  float = 0.15   # ozone air quality
+    weight_uv:     float = 0.15   # UV exposure
     weight_loop:   float = 0.15   # how "loopy" vs out-and-back
     weight_paved:  float = 0.10   # proportion paved/bike-friendly
     weight_shade:  float = 0.25   # tree cover / shade along route (elevated: shade directly offsets UV in sunny climates)
