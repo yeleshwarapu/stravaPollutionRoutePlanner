@@ -102,6 +102,21 @@ def _bearing_to_compass(deg: float) -> str:
     return dirs[idx]
 
 
+def _node_to_latlon(node_data: dict) -> tuple[float, float]:
+    """
+    Return (lat, lon) from a graph node's attribute dict.
+
+    download_network() projects the graph to UTM and stores the inverse-
+    projected geographic coordinates in 'lat' / 'lon' keys.  We always
+    prefer those over the raw 'y' / 'x' values, which are UTM metres and
+    would be completely wrong as API coordinates.
+    """
+    if "lat" in node_data and "lon" in node_data:
+        return (float(node_data["lat"]), float(node_data["lon"]))
+    # Fallback for graphs that are still in EPSG:4326 (y=lat, x=lon)
+    return (float(node_data["y"]), float(node_data["x"]))
+
+
 def _quarter_point_coords(loop: CandidateLoop, G) -> tuple[float, float]:
     """
     Walk the route by cumulative edge length and return the lat/lon of the
@@ -133,7 +148,7 @@ def _quarter_point_coords(loop: CandidateLoop, G) -> tuple[float, float]:
     if total_length == 0:
         if loop.coords:
             return loop.coords[0]
-        return (G.nodes[nodes[0]]["y"], G.nodes[nodes[0]]["x"])
+        return _node_to_latlon(G.nodes[nodes[0]])
 
     quarter = total_length * 0.25
     cumulative = 0.0
@@ -145,7 +160,7 @@ def _quarter_point_coords(loop: CandidateLoop, G) -> tuple[float, float]:
             sample_node = v
             break
 
-    return (G.nodes[sample_node]["y"], G.nodes[sample_node]["x"])
+    return _node_to_latlon(G.nodes[sample_node])
 
 
 def score_route(
