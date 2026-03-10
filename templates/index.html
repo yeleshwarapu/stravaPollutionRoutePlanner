@@ -110,8 +110,7 @@
     border-right: 1px solid var(--border);
     display: flex;
     flex-direction: column;
-    overflow-y: auto;
-    overflow-x: hidden;
+    overflow: hidden;
     background: var(--surface);
   }
 
@@ -127,8 +126,8 @@
 
   /* Desktop: sidebar scrolls as one column; both panels stack vertically */
   .sidebar { flex-direction: column; overflow-y: auto; overflow-x: hidden; }
-  #panel-plan  { flex-shrink: 0; flex: none; overflow: visible; }
-  #panel-routes { flex-shrink: 0; flex: none; height: auto; padding: 0 24px 24px; }
+  #panel-plan  { flex-shrink: 0; overflow: visible; }
+  #panel-routes { flex-shrink: 0; padding: 0 24px 24px; }
 
   /* ── Section label ── */
   .sec-label {
@@ -665,11 +664,11 @@
       <div class="dist-slider-wrap">
         <div class="dist-slider-header">
           <span class="dist-slider-label">Target ride length</span>
-          <span class="dist-slider-val"><span id="dist-slider-val">25</span> mi</span>
+          <span class="dist-slider-val"><span id="dist-slider-val">8</span> mi</span>
         </div>
-        <input type="range" id="dist-slider" min="5" max="100" value="25" step="5" style="width:100%">
+        <input type="range" id="dist-slider" min="1" max="25" value="8" step="1" style="width:100%">
         <div class="dist-slider-ticks">
-          <span>5 mi</span><span>25 mi</span><span>50 mi</span><span>75 mi</span><span>100 mi</span>
+          <span>1 mi</span><span>5 mi</span><span>10 mi</span><span>15 mi</span><span>25 mi</span>
         </div>
       </div>
 
@@ -1254,15 +1253,13 @@ function renderResult(result) {
     byDist[dist].forEach((r, i) => wrap.appendChild(buildCard(r, r.index ?? i)));
   });
 
-  // Scroll sidebar to results — sidebar itself scrolls on desktop
+  // Scroll sidebar to results
+  // On desktop scroll plan panel to terminal; on mobile we already switched tab
   if (window.innerWidth > 680) {
-    const sidebar = document.querySelector('.sidebar');
-    const panelRoutesEl = document.getElementById('panel-routes');
-    if (sidebar && panelRoutesEl) {
-      setTimeout(() => {
-        sidebar.scrollTop = panelRoutesEl.offsetTop - 16;
-      }, 100);
-    }
+    document.getElementById('panel-plan').scrollTo({
+      top: terminal.offsetTop - 16,
+      behavior: 'smooth',
+    });
   }
 }
 

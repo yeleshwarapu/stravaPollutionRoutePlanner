@@ -8,7 +8,6 @@ OSMnx docs: https://osmnx.readthedocs.io
 """
 
 from __future__ import annotations
-import os
 import math
 import numpy as np
 import networkx as nx
@@ -19,7 +18,7 @@ from typing import Optional
 # Configure osmnx once at import time
 ox.settings.log_console = False
 ox.settings.use_cache   = True          # cache network downloads to disk
-ox.settings.cache_folder = os.environ.get("OSMNX_CACHE_DIR", ".osmnx_cache")
+ox.settings.cache_folder = ".osmnx_cache"
 
 
 def miles_to_meters(miles: float) -> float:
@@ -43,10 +42,27 @@ def download_network(
     import pyproj
 
     radius_m = miles_to_meters(radius_miles)
+
+    # Custom filter: keep roads and paths cyclists actually use.
+    # Excludes motorways/trunk (too fast), steps/corridors (unrideable),
+    # and private/construction ways.
+    # NOTE: footway and path are intentionally kept — many of the best
+    # cycling corridors (e.g. Charles River Esplanade in Boston, river paths,
+    # park trails) are tagged as footway or path in OSM even though cyclists
+    # use them freely. Pure pedestrian-only ways are rare in OSM and the
+    # paved_frac scorer will naturally deprioritize poor-surface paths.
+    BIKE_FILTER = (
+        '["highway"!~"motorway|motorway_link|trunk|trunk_link'
+        '|steps|corridor|elevator|escalator'
+        '|construction|proposed|abandoned|raceway"]'
+        '["access"!~"private|no"]'
+    )
+
     G = ox.graph_from_point(
         (lat, lon),
         dist=radius_m,
         network_type=network_type,
+        custom_filter=BIKE_FILTER,
         retain_all=False,
         simplify=True,
     )
@@ -110,13 +126,29 @@ def nodes_at_distance(
     Return all nodes whose shortest-path distance from origin_node is within
     ±tolerance_fraction of target_dist_m.
 
-    Uses Dijkstra's algorithm weighted by edge 'length' (metres in projected graph).
+    Uses a two-step approach for speed:
+    1. Euclidean pre-filter — discard nodes geometrically too far to be
+       reachable at target_dist_m (roads wind ~1.3× straight-line distance,
+       so we use 1.5× as a safe cap). This shrinks the subgraph Dijkstra
+       has to flood by 50–80% on large urban networks.
+    2. Dijkstra on the subgraph with cutoff=hi for the exact answer.
     """
     lo = target_dist_m * (1 - tolerance_fraction)
     hi = target_dist_m * (1 + tolerance_fraction)
 
+    # Euclidean pre-filter in UTM space (x/y are metres in projected graph)
+    o_data = G.nodes[origin_node]
+    ox_, oy_ = o_data["x"], o_data["y"]
+    euclidean_cap = hi * 1.5   # 1.5× accounts for road winding
+    candidate_nodes = [
+        n for n, d in G.nodes(data=True)
+        if math.hypot(d["x"] - ox_, d["y"] - oy_) <= euclidean_cap
+    ]
+
+    subgraph = G.subgraph(candidate_nodes)
+
     lengths = nx.single_source_dijkstra_path_length(
-        G, origin_node, cutoff=hi, weight="length"
+        subgraph, origin_node, cutoff=hi, weight="length"
     )
     return [n for n, d in lengths.items() if lo <= d <= hi]
 
@@ -461,9 +493,21 @@ def download_shade_features(
 
         # Tags that indicate meaningful tree cover / shade
         shade_tags = {
-            "natural":  ["wood", "tree_row", "tree"],
-            "landuse":  ["forest", "orchard", "vineyard"],
+            # Tree cover and natural terrain
+            "natural":  ["wood", "tree_row", "tree",
+                         "scrub", "heath", "shrubbery"],
+            "landuse":  ["forest", "orchard", "vineyard",
+                         "recreation_ground", "grass", "meadow",
+                         "conservation"],
             "leisure":  ["park", "garden", "nature_reserve"],
+            # Protected land — "national_forest" is the correct OSM tag for
+            # US National Forests (e.g. Los Padres, Sierra); "forest" alone
+            # is not a valid boundary value and was silently ignored by OSM.
+            "boundary": ["national_park", "national_forest",
+                         "protected_area", "wilderness",
+                         "regional_park"],
+            # Open space districts (common in Bay Area / California)
+            "ownership": ["national_forest", "state_forest"],
         }
 
         try:
@@ -477,18 +521,50 @@ def download_shade_features(
             return []
 
         polys = []
-        MAX_AREA_DEG2 = 0.005  # ~50 km² in degrees² — skip country-scale polygons
+        MAX_AREA_DEG2 = 0.5     # ~5,000 km² — allows national parks/wilderness, skips continent-scale polygons
+        SIMPLIFY_TOL  = 0.0001  # ~10 m tolerance — reduces vertex count dramatically
+        # No hard polygon cap — simplification already makes each poly cheap.
+        # We sort large polygons first so the most impactful shade features
+        # (big parks, forests) are always included even in very dense areas.
 
+        from shapely.ops import unary_union
+
+        raw = []
         for geom in features.geometry:
             if geom is None:
                 continue
+
+            # GeometryCollection (returned for OSM Relations like open space
+            # districts and national forests) — extract all polygon members
+            if geom.geom_type == "GeometryCollection":
+                parts = [g for g in geom.geoms
+                         if g.geom_type in ("Polygon", "MultiPolygon")]
+                if parts:
+                    geom = unary_union(parts)
+                else:
+                    continue
+
             if geom.geom_type in ("Polygon", "MultiPolygon"):
                 if geom.area < MAX_AREA_DEG2:
-                    polys.append(geom)
+                    raw.append((geom.area, geom.simplify(SIMPLIFY_TOL, preserve_topology=True)))
+                else:
+                    # Very large polygon (e.g. entire national forest boundary) —
+                    # clip it to the query radius before including so we don't
+                    # store a massive geometry and still get the shaded region.
+                    from shapely.geometry import Point
+                    centre = Point(lon, lat)
+                    clip   = centre.buffer(radius_m / 111320)  # degrees approx
+                    clipped = geom.intersection(clip)
+                    if not clipped.is_empty:
+                        raw.append((clipped.area, clipped.simplify(SIMPLIFY_TOL, preserve_topology=True)))
             elif geom.geom_type == "LineString":
                 # tree rows — buffer ~10m in degrees (~0.00009°)
-                polys.append(geom.buffer(0.00009))
+                raw.append((0.0, geom.simplify(SIMPLIFY_TOL).buffer(0.00009)))
             # skip Point geometries — individual trees are too noisy to render
+
+        # Sort largest first so big parks are always kept; small parks follow
+        raw.sort(key=lambda x: x[0], reverse=True)
+        polys = [g for _, g in raw]
 
         return polys
 
@@ -496,30 +572,20 @@ def download_shade_features(
         return []
 
 
-def shade_fraction(
-    G: nx.MultiDiGraph,
-    path: list[int],
-    shade_polys: list,
-) -> float:
+def build_shade_index(G: nx.MultiDiGraph, shade_polys: list):
     """
-    Estimate fraction of the path that is shaded by tree cover.
-    For each edge, checks if its midpoint falls within any shade polygon.
-    Returns 0.0–1.0 (1.0 = fully shaded).
-    Falls back to 0.0 if shapely is unavailable or polys is empty.
+    Pre-build the STRtree spatial index and CRS transformer once so that
+    shade_fraction() can reuse them across all routes instead of rebuilding
+    per call.  Returns (STRtree | None, transformer | None).
     """
-    if not shade_polys or len(path) < 2:
-        return 0.0
-
+    if not shade_polys:
+        return None, None
     try:
         import pyproj
-        from shapely.geometry import Point
-        from shapely.ops import unary_union
         from shapely.strtree import STRtree
 
-        # Build spatial index for fast lookup
         tree = STRtree(shade_polys)
 
-        # Build CRS transformer to WGS84
         crs = G.graph.get("crs")
         transformer = None
         if crs and str(crs).lower() not in ("epsg:4326", "wgs84"):
@@ -529,6 +595,50 @@ def shade_fraction(
                 )
             except Exception:
                 pass
+        return tree, transformer
+    except Exception:
+        return None, None
+
+
+def shade_fraction(
+    G: nx.MultiDiGraph,
+    path: list[int],
+    shade_polys: list,
+    _tree=None,
+    _transformer=None,
+) -> float:
+    """
+    Estimate fraction of the path that is shaded by tree cover.
+    For each edge, checks if its midpoint falls within any shade polygon.
+    Returns 0.0–1.0 (1.0 = fully shaded).
+    Falls back to 0.0 if shapely is unavailable or polys is empty.
+
+    Pass pre-built _tree / _transformer from build_shade_index() to avoid
+    rebuilding the spatial index on every call.
+    """
+    if not shade_polys or len(path) < 2:
+        return 0.0
+
+    try:
+        import pyproj
+        from shapely.geometry import Point
+        from shapely.strtree import STRtree
+
+        # Reuse pre-built index if provided, otherwise build now (slow path)
+        if _tree is not None:
+            tree = _tree
+            transformer = _transformer
+        else:
+            tree = STRtree(shade_polys)
+            crs = G.graph.get("crs")
+            transformer = None
+            if crs and str(crs).lower() not in ("epsg:4326", "wgs84"):
+                try:
+                    transformer = pyproj.Transformer.from_crs(
+                        crs, "EPSG:4326", always_xy=True
+                    )
+                except Exception:
+                    pass
 
         def _edge_midpoint_latlon(u, v):
             """Return (lat, lon) of edge midpoint using geometry if available."""
