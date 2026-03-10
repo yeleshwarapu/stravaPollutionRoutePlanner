@@ -5,7 +5,7 @@ colorFrom: yellow
 colorTo: green
 sdk: docker
 pinned: false
-short_description: Health-aware cycling route planner — ranked by air quality, UV, and shade
+short_description: Cycling routes ranked by air quality, UV & shade
 ---
 
 # R'Cycle — Health-Aware Cycling Route Planner
