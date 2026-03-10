@@ -280,16 +280,40 @@ def _run_plan(job_id: str, req: PlanRequest):
                 G=G,
             )
 
-            # Fetch elevation for every scored route so we can filter accurately
-            # and always show the gain value on the card regardless of mode.
-            if req.elevation != "any":
-                log(f"  Fetching elevation data ({req.elevation} filter)…")
-                for r in scored:
-                    r._elevation_gain_ft = fetch_elevation_gain_ft(G, r.path)
+            # Fetch elevation in parallel, capped to a sensible candidate pool.
+            # For filtered modes we need enough candidates to have a good chance
+            # of finding matches; for "any" we only need the final top-N.
+            # Either way we never make more than ELEV_POOL sequential calls.
+            ELEV_POOL = req.top * 4  # e.g. top=3 → sample up to 12 candidates
 
+            if req.elevation != "any":
+                elev_candidates = scored[:max(ELEV_POOL, req.top * 4)]
+                log(f"  Fetching elevation data ({req.elevation} filter, {len(elev_candidates)} candidates)…")
+            else:
+                elev_candidates = scored[:req.top]
+                log(f"  Fetching elevation data ({len(elev_candidates)} routes)…")
+
+            from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
+            elev_workers = min(len(elev_candidates), 6)
+            with ThreadPoolExecutor(max_workers=elev_workers) as pool:
+                future_map = {pool.submit(fetch_elevation_gain_ft, G, r.path): r
+                              for r in elev_candidates}
+                for fut in _as_completed(future_map):
+                    route = future_map[fut]
+                    try:
+                        route._elevation_gain_ft = fut.result()
+                    except Exception:
+                        route._elevation_gain_ft = 0.0
+
+            # Routes not sampled get a sentinel so they still serialise safely
+            for r in scored:
+                if not hasattr(r, "_elevation_gain_ft"):
+                    r._elevation_gain_ft = 0.0
+
+            if req.elevation != "any":
                 gains = [(r, r._elevation_gain_ft,
                           r._elevation_gain_ft / r.length_miles * 10 if r.length_miles else 0)
-                         for r in scored]
+                         for r in elev_candidates]
 
                 # Log what we actually found so bad filters are diagnosable
                 gain_summary = ", ".join(
@@ -320,9 +344,6 @@ def _run_plan(job_id: str, req: PlanRequest):
 
                 # Re-sort filtered by score (elevation fetch doesn't change scores)
                 scored = sorted(filtered, key=lambda r: r.score, reverse=True)
-            else:
-                for r in scored:
-                    r._elevation_gain_ft = fetch_elevation_gain_ft(G, r.path)
 
             top = scored[:req.top]
             all_scored.extend(top)
