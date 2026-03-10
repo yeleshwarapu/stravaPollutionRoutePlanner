@@ -85,7 +85,15 @@ def _route_to_gpx(route: ScoredRoute, G, name: str) -> ET.Element:
 
     # Walk each edge, using geometry when available
     for u, v in zip(path[:-1], path[1:]):
-        edge_data = G[u][v]
+        # Handle both edge directions — greedy walk may traverse edges either way
+        if G.has_edge(u, v):
+            edge_data = G[u][v]
+        elif G.has_edge(v, u):
+            edge_data = G[v][u]
+        else:
+            lat, lon = _node_latlon(u)
+            _add_trkpt(lat, lon, u)
+            continue
         best = min(edge_data.values(), key=lambda d: d.get("length", 1e9))
         geom = best.get("geometry")
 
