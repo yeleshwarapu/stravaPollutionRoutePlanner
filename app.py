@@ -256,11 +256,14 @@ def _run_plan(job_id: str, req: PlanRequest):
         # 6. Build map → capture HTML string
         log("Building map…")
 
-        # Convert shade polys to GeoJSON for the map
+        # Convert shade polys to GeoJSON for the map.
+        # Polys are already simplified in download_shade_features; we further
+        # cap the map overlay at 150 polygons — more than that slows the browser
+        # without adding meaningful visual fidelity.
         shade_geojson = []
         try:
             from shapely.geometry import mapping
-            for poly in shade_polys:
+            for poly in shade_polys[:150]:
                 try:
                     shade_geojson.append(mapping(poly))
                 except Exception:

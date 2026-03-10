@@ -476,18 +476,22 @@ def download_shade_features(
             return []
 
         polys = []
-        MAX_AREA_DEG2 = 0.005  # ~50 km² in degrees² — skip country-scale polygons
+        MAX_AREA_DEG2 = 0.005   # ~50 km² in degrees² — skip country-scale polygons
+        SIMPLIFY_TOL  = 0.0001  # ~10 m tolerance — reduces vertex count dramatically
+        MAX_POLYS     = 300     # cap total polygons to bound STRtree build time
 
         for geom in features.geometry:
             if geom is None:
                 continue
             if geom.geom_type in ("Polygon", "MultiPolygon"):
                 if geom.area < MAX_AREA_DEG2:
-                    polys.append(geom)
+                    polys.append(geom.simplify(SIMPLIFY_TOL, preserve_topology=True))
             elif geom.geom_type == "LineString":
                 # tree rows — buffer ~10m in degrees (~0.00009°)
-                polys.append(geom.buffer(0.00009))
+                polys.append(geom.simplify(SIMPLIFY_TOL).buffer(0.00009))
             # skip Point geometries — individual trees are too noisy to render
+            if len(polys) >= MAX_POLYS:
+                break
 
         return polys
 
@@ -495,30 +499,20 @@ def download_shade_features(
         return []
 
 
-def shade_fraction(
-    G: nx.MultiDiGraph,
-    path: list[int],
-    shade_polys: list,
-) -> float:
+def build_shade_index(G: nx.MultiDiGraph, shade_polys: list):
     """
-    Estimate fraction of the path that is shaded by tree cover.
-    For each edge, checks if its midpoint falls within any shade polygon.
-    Returns 0.0–1.0 (1.0 = fully shaded).
-    Falls back to 0.0 if shapely is unavailable or polys is empty.
+    Pre-build the STRtree spatial index and CRS transformer once so that
+    shade_fraction() can reuse them across all routes instead of rebuilding
+    per call.  Returns (STRtree | None, transformer | None).
     """
-    if not shade_polys or len(path) < 2:
-        return 0.0
-
+    if not shade_polys:
+        return None, None
     try:
         import pyproj
-        from shapely.geometry import Point
-        from shapely.ops import unary_union
         from shapely.strtree import STRtree
 
-        # Build spatial index for fast lookup
         tree = STRtree(shade_polys)
 
-        # Build CRS transformer to WGS84
         crs = G.graph.get("crs")
         transformer = None
         if crs and str(crs).lower() not in ("epsg:4326", "wgs84"):
@@ -528,6 +522,50 @@ def shade_fraction(
                 )
             except Exception:
                 pass
+        return tree, transformer
+    except Exception:
+        return None, None
+
+
+def shade_fraction(
+    G: nx.MultiDiGraph,
+    path: list[int],
+    shade_polys: list,
+    _tree=None,
+    _transformer=None,
+) -> float:
+    """
+    Estimate fraction of the path that is shaded by tree cover.
+    For each edge, checks if its midpoint falls within any shade polygon.
+    Returns 0.0–1.0 (1.0 = fully shaded).
+    Falls back to 0.0 if shapely is unavailable or polys is empty.
+
+    Pass pre-built _tree / _transformer from build_shade_index() to avoid
+    rebuilding the spatial index on every call.
+    """
+    if not shade_polys or len(path) < 2:
+        return 0.0
+
+    try:
+        import pyproj
+        from shapely.geometry import Point
+        from shapely.strtree import STRtree
+
+        # Reuse pre-built index if provided, otherwise build now (slow path)
+        if _tree is not None:
+            tree = _tree
+            transformer = _transformer
+        else:
+            tree = STRtree(shade_polys)
+            crs = G.graph.get("crs")
+            transformer = None
+            if crs and str(crs).lower() not in ("epsg:4326", "wgs84"):
+                try:
+                    transformer = pyproj.Transformer.from_crs(
+                        crs, "EPSG:4326", always_xy=True
+                    )
+                except Exception:
+                    pass
 
         def _edge_midpoint_latlon(u, v):
             """Return (lat, lon) of edge midpoint using geometry if available."""

@@ -265,7 +265,12 @@ def score_all(
     Limits API calls by capping at max_candidates before scoring.
     Each route is sampled at its own 25% path-distance point so that
     routes in different directions receive genuinely different AQ/UV scores.
+
+    Routes are scored in parallel (ThreadPoolExecutor) so PM2.5 + UV API
+    calls for different routes overlap instead of running back-to-back.
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     cap = max_candidates or cfg.max_candidates
     subset = loops[:cap]
 
@@ -273,12 +278,19 @@ def score_all(
     lon = origin_lon or cfg.origin_lon
 
     scored = []
-    for loop in subset:
-        try:
-            sr = score_route(loop, cfg, lat, lon, G=G)
-            scored.append(sr)
-        except Exception as e:
-            print(f"  [scorer] Warning: skipping route — {e}")
+    # Use min(len, 6) workers — more than 6 risks Open-Meteo rate-limiting
+    workers = min(len(subset), 6) if subset else 1
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(score_route, loop, cfg, lat, lon, G): loop
+            for loop in subset
+        }
+        for future in as_completed(futures):
+            try:
+                sr = future.result()
+                scored.append(sr)
+            except Exception as e:
+                print(f"  [scorer] Warning: skipping route — {e}")
 
     scored.sort(key=lambda r: r.score, reverse=True)
     return scored

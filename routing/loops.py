@@ -33,6 +33,7 @@ from routing.network import (
     path_coords,
     paved_fraction,
     shade_fraction,
+    build_shade_index,
     paved_weight_graph,
     miles_to_meters,
     meters_to_miles,
@@ -126,6 +127,9 @@ def generate_candidates(
     # Build a paved-biased copy of the graph once.
     G_paved = paved_weight_graph(G, unpaved_penalty=8.0, park_polys=shade_polys)
 
+    # Pre-build shade spatial index once — reused for every candidate route.
+    _shade_tree, _shade_transformer = build_shade_index(G, shade_polys or [])
+
     # Track edges used by already-accepted candidates so subsequent spokes are
     # forced onto different roads. This prevents all routes funnelling through
     # the same bottleneck (bridges, underpasses, narrow peninsulas).
@@ -206,7 +210,7 @@ def generate_candidates(
 
             coords = path_coords(G, full_path[::10])
             paved = paved_fraction(G, full_path)
-            shade = shade_fraction(G, full_path, shade_polys or [])
+            shade = shade_fraction(G, full_path, shade_polys or [], _tree=_shade_tree, _transformer=_shade_transformer)
 
             candidates.append(CandidateLoop(
                 path=full_path,
