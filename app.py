@@ -199,7 +199,9 @@ def _run_plan(job_id: str, req: PlanRequest):
             G = _graph_cache[cache_key]
         else:
             max_dist = max(req.distances)
-            log(f"Downloading {req.network} network within {max_dist * 0.6:.1f} mi…", step="network", eta=30)
+            # ETA scales with area (radius²): 5mi~15s, 15mi~30s, 30mi~55s, 60mi~90s
+            _net_eta = max(10, int(10 + (max_dist * 0.6) ** 1.4 * 0.35))
+            log(f"Downloading {req.network} network within {max_dist * 0.6:.1f} mi…", step="network", eta=_net_eta)
             from routing.network import download_network
             G = download_network(lat, lon, max_dist * 0.6, req.network)
             _graph_cache[cache_key] = G
@@ -215,7 +217,8 @@ def _run_plan(job_id: str, req: PlanRequest):
             shade_polys = _graph_cache[shade_cache_key]
         else:
             max_dist = max(req.distances)
-            log("Fetching tree cover data…", step="shade", eta=10)
+            _shade_eta = max(5, int(5 + (max_dist * 0.6) ** 1.2 * 0.2))
+            log("Fetching tree cover data…", step="shade", eta=_shade_eta)
             shade_polys = download_shade_features(lat, lon, max_dist * 0.6)
             _graph_cache[shade_cache_key] = shade_polys
             log(f"  Found {len(shade_polys)} shade features")
@@ -233,7 +236,9 @@ def _run_plan(job_id: str, req: PlanRequest):
             if not candidates:
                 continue
 
-            log(f"  Scoring routes…", step="scoring", eta=max(3, len(candidates) // 2))
+            # Each candidate needs ~1-2 API round trips; spokes scales linearly
+            _score_eta = max(3, min(len(candidates), req.spokes) * 2)
+            log(f"  Scoring routes…", step="scoring", eta=_score_eta)
             scored = score_all(
                 candidates, cfg, origin_lat, origin_lon,
                 max_candidates=cfg.max_candidates,
