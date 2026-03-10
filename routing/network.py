@@ -247,12 +247,57 @@ def paved_fraction(G: nx.MultiDiGraph, path: list[int]) -> float:
     return (paved_len / total_len) if total_len > 0 else 0.0
 
 
+def _is_cycling_path(edge_data: dict) -> bool:
+    """
+    Return True if this edge is a designated or clearly cycling-friendly path,
+    even if it's tagged as 'path', 'footway', or 'track'.
+
+    Catches: park paths, riverside trails, converted rail paths, greenways —
+    anything that OSM tags with bicycle access but isn't a full road.
+    """
+    # Explicit bicycle designation
+    bicycle = str(edge_data.get("bicycle", "")).lower()
+    if bicycle in ("designated", "yes", "permissive", "official"):
+        return True
+
+    # foot=no on a path usually means it's cycling-only
+    foot = str(edge_data.get("foot", "")).lower()
+    if foot == "no":
+        return True
+
+    # cycleway access tags (e.g. cycleway=track alongside a road)
+    for tag in ("cycleway", "cycleway:left", "cycleway:right", "cycleway:both"):
+        val = str(edge_data.get(tag, "")).lower()
+        if val in ("track", "lane", "shared_lane", "designated", "yes"):
+            return True
+
+    # highway=path with no explicit bicycle restriction and paved surface
+    hw = edge_data.get("highway", "")
+    if isinstance(hw, list):
+        hw = hw[0] if hw else ""
+    hw = str(hw).lower()
+
+    surface = edge_data.get("surface", "")
+    if isinstance(surface, list):
+        surface = surface[0] if surface else ""
+    surface = str(surface).lower()
+
+    PAVED_SURFACES = {
+        "paved", "asphalt", "concrete", "concrete:plates", "concrete:lanes",
+        "paving_stones", "sett", "cobblestone",
+    }
+    if hw in ("path", "footway") and surface in PAVED_SURFACES:
+        return True
+
+    return False
+
+
 def _is_edge_paved(edge_data: dict) -> bool:
     """
-    Return True if an OSM edge is paved.
-    Checks the 'surface' tag first (most reliable), then falls back to
-    highway type. Tracks, paths, and unclassified roads default to unpaved.
+    Return True if an OSM edge is paved/cycling-friendly.
+    Checks surface tag first, then cycling path designation, then highway type.
     """
+    # ── Surface tag (most reliable) ──────────────────────────────────────────
     surface = edge_data.get("surface", "")
     if isinstance(surface, list):
         surface = surface[0] if surface else ""
@@ -272,6 +317,11 @@ def _is_edge_paved(edge_data: dict) -> bool:
     if surface in UNPAVED_SURFACES:
         return False
 
+    # ── Cycling path check ───────────────────────────────────────────────────
+    if _is_cycling_path(edge_data):
+        return True
+
+    # ── Highway type fallback ────────────────────────────────────────────────
     hw = edge_data.get("highway", "")
     if isinstance(hw, list):
         hw = hw[0] if hw else ""
@@ -298,17 +348,94 @@ def _is_edge_paved(edge_data: dict) -> bool:
     return False
 
 
-def paved_weight_graph(G: nx.MultiDiGraph, unpaved_penalty: float = 8.0) -> nx.MultiDiGraph:
+def paved_weight_graph(
+    G: nx.MultiDiGraph,
+    unpaved_penalty: float = 8.0,
+    park_polys: list = None,
+    shade_bonus: float = 0.80,   # multiplier for paved edges inside shade polys
+) -> nx.MultiDiGraph:
     """
-    Return a copy of G where unpaved edges have their length multiplied by
-    unpaved_penalty, biasing shortest-path routing strongly toward paved roads.
-    A penalty of 8 means the router will accept a paved detour up to 8x longer
-    before using a dirt road.
+    Return a copy of G with edge weights adjusted for surface quality and shade:
+
+    - Paved roads: unchanged (1×)
+    - Paved roads inside shade/park polys: 0.80× (router prefers shaded roads)
+    - Designated cycling paths: 0.55× (bonus — router actively prefers them)
+    - Cycling paths inside shade: 0.55 × 0.80 = 0.44×
+    - Paths/tracks inside park polygons: 0.70× (preferred — parks are shadier and more scenic)
+    - Unpaved non-cycling edges: 8× penalty (router avoids unless no alternative)
+
+    park_polys is the list of Shapely geometries from download_shade_features.
+    Passing it in allows river trails and park paths to be treated as
+    cycling-friendly even when their OSM bicycle tag is missing, and gives
+    paved roads under tree cover a routing preference so shade steers the route.
     """
+    try:
+        from shapely.geometry import Point
+        from shapely.strtree import STRtree
+        import pyproj
+
+        crs = G.graph.get("crs")
+        transformer = None
+        if crs and str(crs).lower() not in ("epsg:4326", "wgs84"):
+            transformer = pyproj.Transformer.from_crs(
+                crs, "EPSG:4326", always_xy=True
+            )
+
+        park_tree = STRtree(park_polys) if park_polys else None
+
+        def _edge_in_park(u_data, v_data) -> bool:
+            if park_tree is None:
+                return False
+            mx = (u_data["x"] + v_data["x"]) / 2
+            my = (u_data["y"] + v_data["y"]) / 2
+            if transformer:
+                lon, lat = transformer.transform(mx, my)
+            else:
+                lon, lat = mx, my
+            pt = Point(lon, lat)
+            return park_tree.query(pt, predicate="intersects").size > 0
+
+    except Exception:
+        park_tree = None
+
+        def _edge_in_park(u_data, v_data) -> bool:
+            return False
+
     H = G.copy()
     for u, v, key, data in H.edges(keys=True, data=True):
-        if not _is_edge_paved(data):
-            H[u][v][key]["length"] = data.get("length", 1.0) * unpaved_penalty
+        length = data.get("length", 1.0)
+
+        # Determine if this edge sits inside a shade/park polygon
+        try:
+            u_data = H.nodes[u]
+            v_data = H.nodes[v]
+            in_shade = _edge_in_park(u_data, v_data)
+        except Exception:
+            in_shade = False
+
+        if _is_cycling_path(data):
+            # Designated cycling path — actively prefer it
+            base = length * 0.55
+        elif _is_edge_paved(data):
+            # Normal paved road — no base penalty
+            base = length
+        else:
+            # Unpaved — check if it's inside a park before penalising
+            if in_shade:
+                # Park path with no explicit cycling tag — mild preference.
+                # Parks are typically shadier, quieter, and more scenic;
+                # 0.70× encourages routing through them over busy streets.
+                base = length * 0.70
+            else:
+                # Genuine unpaved non-park edge — penalise
+                base = length * unpaved_penalty
+
+        # Apply shade bonus on top: router prefers paved/cycling edges in shade
+        if in_shade and _is_edge_paved(data):
+            base *= shade_bonus
+
+        H[u][v][key]["length"] = base
+
     return H
 
 
@@ -349,17 +476,18 @@ def download_shade_features(
             return []
 
         polys = []
+        MAX_AREA_DEG2 = 0.005  # ~50 km² in degrees² — skip country-scale polygons
+
         for geom in features.geometry:
             if geom is None:
                 continue
             if geom.geom_type in ("Polygon", "MultiPolygon"):
-                polys.append(geom)
+                if geom.area < MAX_AREA_DEG2:
+                    polys.append(geom)
             elif geom.geom_type == "LineString":
-                # tree rows — buffer by 10 m to give a shade corridor
-                polys.append(geom.buffer(10))
-            elif geom.geom_type == "Point":
-                # individual trees — buffer by 5 m
-                polys.append(geom.buffer(5))
+                # tree rows — buffer ~10m in degrees (~0.00009°)
+                polys.append(geom.buffer(0.00009))
+            # skip Point geometries — individual trees are too noisy to render
 
         return polys
 
@@ -445,3 +573,90 @@ def shade_fraction(
 
     except Exception:
         return 0.0
+
+
+# ── Traffic proximity heatmap ─────────────────────────────────────────────────
+
+# Intensity by highway class — higher = more traffic pollution exposure
+_TRAFFIC_INTENSITY = {
+    "motorway":       1.00,
+    "motorway_link":  0.90,
+    "trunk":          0.85,
+    "trunk_link":     0.75,
+    "primary":        0.65,
+    "primary_link":   0.55,
+    "secondary":      0.45,
+    "secondary_link": 0.38,
+    "tertiary":       0.25,
+    "tertiary_link":  0.20,
+}
+
+
+def compute_traffic_heat(
+    G: nx.MultiDiGraph,
+    sample_spacing_m: float = 40.0,
+) -> list[list[float]]:
+    """
+    Build a heatmap point cloud from the road network.
+    Only includes roads with meaningful traffic (motorway → tertiary).
+    Samples points every sample_spacing_m metres along each edge geometry.
+
+    Returns list of [lat, lon, intensity] where intensity is 0–1.
+    These can be fed directly into Leaflet.heat.
+    """
+    import pyproj
+
+    crs = G.graph.get("crs")
+    transformer = None
+    if crs and str(crs).lower() not in ("epsg:4326", "wgs84"):
+        try:
+            transformer = pyproj.Transformer.from_crs(
+                crs, "EPSG:4326", always_xy=True
+            )
+        except Exception:
+            pass
+
+    def _to_latlon(x, y):
+        if transformer:
+            lon, lat = transformer.transform(x, y)
+            return float(lat), float(lon)
+        return float(y), float(x)
+
+    points = []
+    seen_edges = set()
+
+    for u, v, data in G.edges(data=True):
+        # Deduplicate bidirectional edges
+        edge_key = (min(u, v), max(u, v))
+        if edge_key in seen_edges:
+            continue
+        seen_edges.add(edge_key)
+
+        hw = data.get("highway", "")
+        if isinstance(hw, list):
+            hw = hw[0] if hw else ""
+        hw = str(hw).lower()
+
+        intensity = _TRAFFIC_INTENSITY.get(hw)
+        if intensity is None:
+            continue  # skip residential, cycleway, path etc.
+
+        geom = data.get("geometry")
+        length = data.get("length", 0.0)
+
+        if geom is not None and length > 0:
+            # Sample evenly along the geometry
+            n_samples = max(2, int(length / sample_spacing_m))
+            for i in range(n_samples):
+                frac = i / (n_samples - 1) if n_samples > 1 else 0.5
+                pt = geom.interpolate(frac, normalized=True)
+                lat, lon = _to_latlon(pt.x, pt.y)
+                points.append([lat, lon, round(intensity, 2)])
+        else:
+            # Fallback: just use the two endpoints
+            u_d, v_d = G.nodes[u], G.nodes[v]
+            for node_d in (u_d, v_d):
+                lat, lon = _to_latlon(node_d["x"], node_d["y"])
+                points.append([lat, lon, round(intensity, 2)])
+
+    return points

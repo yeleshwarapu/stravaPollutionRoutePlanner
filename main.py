@@ -165,19 +165,27 @@ def main():
     # ── Road network download ─────────────────────────────────────────────────
     header("Road Network")
     max_dist = max(args.distances)
-    info(f"Downloading {args.network} network within {max_dist * 0.6:.1f} mi of origin…")
+    info(f"Downloading {args.network} network within {max_dist * 0.75:.1f} mi of origin…")
     info("(Cached after first run — using OSMnx disk cache)")
 
-    from routing.network import download_network, nearest_node, node_coords
+    from routing.network import download_network, nearest_node, node_coords, download_shade_features
     import shutil, os as _os
     if not args.dev and _os.path.exists(".osmnx_cache"):
         shutil.rmtree(".osmnx_cache")
         info("Cleared OSMnx cache (ensures fresh coordinate data)")
-    G = download_network(args.lat, args.lon, max_dist * 0.6, args.network)
+    G = download_network(args.lat, args.lon, max_dist * 0.75, args.network)
     origin_node = nearest_node(G, args.lat, args.lon)
     # Use the actual snapped node position so the marker aligns with routes
     origin_lat, origin_lon = node_coords(G, origin_node)
     success(f"Network: {len(G.nodes):,} nodes, {len(G.edges):,} edges")
+
+    info("Fetching tree cover / shade data…")
+    try:
+        shade_polys = download_shade_features(args.lat, args.lon, max_dist * 0.75)
+        info(f"  Found {len(shade_polys)} shade features")
+    except Exception as e:
+        info(f"  Shade fetch failed: {e}")
+        shade_polys = []
 
     # ── Generate + score routes ───────────────────────────────────────────────
     from routing.loops import generate_candidates
@@ -192,6 +200,7 @@ def main():
         candidates = generate_candidates(
             G, origin_node, dist,
             num_spokes=args.spokes,
+            shade_polys=shade_polys,
         )
         info(f"Found {len(candidates)} candidate loops")
 

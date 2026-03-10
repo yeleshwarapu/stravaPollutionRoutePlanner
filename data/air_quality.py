@@ -117,6 +117,31 @@ def pm25_to_aqi_category(pm25: float) -> tuple[str, str]:
         return "Hazardous", "#7e0023"
 
 
+def sample_aq_grid(
+    lat_min: float, lat_max: float,
+    lon_min: float, lon_max: float,
+    steps: int = 10,
+) -> list[list[float]]:
+    """
+    Sample PM2.5 on a coarse grid across a bounding box.
+    Returns list of [lat, lon, intensity] where intensity is 0–1 normalised.
+    Uses steps×steps = 36 points by default — fast enough for a heatmap.
+    """
+    import numpy as np
+    lats = np.linspace(lat_min, lat_max, steps)
+    lons = np.linspace(lon_min, lon_max, steps)
+    points = []
+    for lat in lats:
+        for lon in lons:
+            try:
+                pm25 = get_current_pm25(float(lat), float(lon))
+                intensity = min(pm25 / 55.4, 1.0)  # normalise to 0–1
+                points.append([float(lat), float(lon), round(intensity, 3)])
+            except Exception:
+                points.append([float(lat), float(lon), 0.1])
+    return points
+
+
 def normalise_pm25(pm25: float, ceiling: float = 55.4) -> float:
     """Return 0 (clean) → 1 (worst), clamped at ceiling."""
     return min(pm25 / ceiling, 1.0)

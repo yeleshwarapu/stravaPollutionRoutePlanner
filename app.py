@@ -188,9 +188,9 @@ def _run_plan(job_id: str, req: PlanRequest):
             G = _graph_cache[cache_key]
         else:
             max_dist = max(req.distances)
-            log(f"Downloading {req.network} network within {max_dist * 0.6:.1f} mi…")
+            log(f"Downloading {req.network} network within {max_dist * 0.75:.1f} mi…")
             from routing.network import download_network
-            G = download_network(lat, lon, max_dist * 0.6, req.network)
+            G = download_network(lat, lon, max_dist * 0.75, req.network)
             _graph_cache[cache_key] = G
             log(f"  Network: {len(G.nodes):,} nodes, {len(G.edges):,} edges")
 
@@ -205,7 +205,7 @@ def _run_plan(job_id: str, req: PlanRequest):
         else:
             max_dist = max(req.distances)
             log("Fetching tree cover data…")
-            shade_polys = download_shade_features(lat, lon, max_dist * 0.6)
+            shade_polys = download_shade_features(lat, lon, max_dist * 0.75)
             _graph_cache[shade_cache_key] = shade_polys
             log(f"  Found {len(shade_polys)} shade features")
 
@@ -255,6 +255,19 @@ def _run_plan(job_id: str, req: PlanRequest):
 
         # 6. Build map → capture HTML string
         log("Building map…")
+
+        # Convert shade polys to GeoJSON for the map
+        shade_geojson = []
+        try:
+            from shapely.geometry import mapping
+            for poly in shade_polys:
+                try:
+                    shade_geojson.append(mapping(poly))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         from viz.mapper import build_map
         tmp_dir  = tempfile.mkdtemp()
         map_path = os.path.join(tmp_dir, "routes.html")
@@ -265,6 +278,7 @@ def _run_plan(job_id: str, req: PlanRequest):
             G=G,
             output_path=map_path,
             uv_window=uv_window,
+            shade_geojson=shade_geojson,
         )
         with open(map_path, "r", encoding="utf-8") as f:
             map_html = f.read()

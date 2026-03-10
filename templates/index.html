@@ -38,6 +38,8 @@
     cursor: none;
   }
 
+  /* iframe suppresses its own cursor via injected CSS in mapper.py */
+
   /* ── Cursor ── */
   .cursor { position: fixed; top: 0; left: 0; z-index: 9999; pointer-events: none; mix-blend-mode: exclusion; }
   .cursor-dot  { width: 8px; height: 8px; background: var(--amber); border-radius: 50%; transform: translate(-50%,-50%); transition: width .15s, height .15s, background .15s; }
@@ -96,6 +98,7 @@
     display: flex;
     flex: 1;
     overflow: hidden;
+    min-height: 0;
     position: relative;
     z-index: 1;
   }
@@ -418,6 +421,8 @@
   /* ── Map panel ── */
   .map-panel {
     flex: 1;
+    min-height: 0;
+    min-width: 0;
     position: relative;
     overflow: hidden;
     background: #0a0a0a;
@@ -630,14 +635,31 @@
 </div>
 
 <script>
-// ── Cursor ──────────────────────────────────────────────────────────────────
+// ── Cursor ───────────────────────────────────────────────────────────────────
 const dot = document.querySelector('.cursor-dot');
 const ring = document.querySelector('.cursor-ring');
 let mx = 0, my = 0, rx = 0, ry = 0;
+
 document.addEventListener('mousemove', e => {
   mx = e.clientX; my = e.clientY;
   dot.style.left = mx + 'px'; dot.style.top = my + 'px';
 });
+
+// When the mouse enters the iframe the parent stops receiving mousemove.
+// The iframe relays its own mousemove back via postMessage with coordinates
+// relative to its own viewport — we offset by the iframe's page position.
+window.addEventListener('message', e => {
+  if (!e.data) return;
+  if (e.data.type === 'mousemove') {
+    const frame = document.getElementById('map-frame');
+    if (!frame) return;
+    const rect = frame.getBoundingClientRect();
+    mx = rect.left + e.data.x;
+    my = rect.top  + e.data.y;
+    dot.style.left = mx + 'px'; dot.style.top = my + 'px';
+  }
+});
+
 (function anim() {
   rx += (mx - rx) * .12; ry += (my - ry) * .12;
   ring.style.left = rx + 'px'; ring.style.top = ry + 'px';
@@ -646,6 +668,23 @@ document.addEventListener('mousemove', e => {
 document.querySelectorAll('a,button,input,.dist-pill,.elev-btn,.route-card').forEach(el => {
   el.addEventListener('mouseenter', () => document.body.classList.add('hovering'));
   el.addEventListener('mouseleave', () => document.body.classList.remove('hovering'));
+});
+
+// ── Keyboard relay to map iframe ─────────────────────────────────────────────
+// Arrow keys, +/- zoom, and scroll-equivalent keys are forwarded to the
+// Leaflet map inside the iframe so users don't need to click the map first.
+const MAP_KEYS = new Set([
+  'ArrowUp','ArrowDown','ArrowLeft','ArrowRight',
+  '+','-','=','_','PageUp','PageDown',
+]);
+document.addEventListener('keydown', e => {
+  if (!MAP_KEYS.has(e.key)) return;
+  // Don't steal keys while user is typing in an input
+  if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
+  const frame = document.getElementById('map-frame');
+  if (frame && frame.contentWindow) {
+    frame.contentWindow.postMessage({ type: 'keydown', key: e.key, code: e.code }, '*');
+  }
 });
 
 // ── Distance slider ──────────────────────────────────────────────────────────

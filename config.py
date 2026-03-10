@@ -11,8 +11,8 @@ from typing import Optional
 class Config:
     # ── Origin ──────────────────────────────────────────────
     # GrandMarc at University Village, 3549 Iowa Ave, Riverside CA 92507
-    origin_lat: float = 28.6139
-    origin_lon: float = 77.2090
+    origin_lat: float = 33.9533
+    origin_lon: float = -117.3961
 
     # ── Route generation ────────────────────────────────────
     # Target loop distances in miles
@@ -35,11 +35,11 @@ class Config:
     aq_sample_spacing_miles: float = 0.5
 
     # ── Scoring weights (must sum to 1.0) ───────────────────
-    weight_pm25:   float = 0.40   # air quality — highest priority
+    weight_pm25:   float = 0.30   # air quality
     weight_uv:     float = 0.20   # UV exposure
     weight_loop:   float = 0.15   # how "loopy" vs out-and-back
     weight_paved:  float = 0.10   # proportion paved/bike-friendly
-    weight_shade:  float = 0.15   # tree cover / shade along route
+    weight_shade:  float = 0.25   # tree cover / shade along route (elevated: shade directly offsets UV in sunny climates)
 
     # ── Air Quality thresholds (EPA PM2.5 μg/m³) ────────────
     pm25_good:        float = 12.0   # AQI 0–50
