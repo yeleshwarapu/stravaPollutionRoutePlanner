@@ -1,3 +1,13 @@
+---
+title: R'Cycle Co-Op
+emoji: 🚴
+colorFrom: yellow
+colorTo: green
+sdk: docker
+pinned: false
+short_description: Health-aware cycling route planner — ranked by air quality, UV, and shade
+---
+
 # R'Cycle — Health-Aware Cycling Route Planner
 
 > Built from ~5,000 miles of Strava data, riding through Riverside's industrial corridors.
