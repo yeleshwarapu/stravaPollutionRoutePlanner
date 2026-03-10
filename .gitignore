@@ -7,4 +7,4 @@ output/
 *.gpx
 .env
 *.fit
-*.fit.gz
+*.fit.gz".cache/" 
