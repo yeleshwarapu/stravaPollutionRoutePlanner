@@ -1023,9 +1023,10 @@ function dlGpx(gpx_id, e) {
 }
 
 // ── ETA countdown ────────────────────────────────────────────────────────────
-let _etaTimer = null;
-let _etaStart = 0;
-let _etaTotal = 0;
+let _etaTimer    = null;
+let _etaStart    = 0;      // wall-clock ms when current step began
+let _etaTotal    = 0;      // estimated seconds for current step
+let _etaStepName = '';     // track which step is active to avoid resets on re-poll
 
 const STEP_LABELS = {
   env:     'Checking conditions',
@@ -1041,40 +1042,54 @@ function updateEta(step) {
   const label = document.getElementById('eta-label');
   if (!wrap) return;
 
-  const eta = step.eta || 0;
+  const eta      = step.eta || 0;
+  const stepName = STEP_LABELS[step.name] || step.name;
+
+  // Only start a new countdown when the step actually changes.
+  // The poll fires every 800ms with the same current_step while the backend
+  // is still on that step — we must NOT reset the timer on each poll.
+  if (step.name === _etaStepName) return;
+
+  _etaStepName = step.name;
+  if (_etaTimer) { cancelAnimationFrame(_etaTimer); _etaTimer = null; }
+
   if (eta <= 0) { wrap.style.display = 'none'; return; }
 
-  // Reset for new step
-  clearEta();
   _etaTotal = eta;
   _etaStart = Date.now();
   wrap.style.display = 'flex';
-
-  const stepName = STEP_LABELS[step.name] || step.name;
+  bar.style.transition = 'none';
+  bar.style.width = '0%';
 
   function tick() {
     const elapsed = (Date.now() - _etaStart) / 1000;
-    const remaining = Math.max(0, _etaTotal - elapsed);
-    const pct = Math.min(100, (elapsed / _etaTotal) * 100);
-    bar.style.width = pct + '%';
-    if (remaining > 1) {
-      label.textContent = stepName + ' · ~' + Math.ceil(remaining) + 's';
-    } else {
-      label.textContent = stepName + ' · almost done…';
-    }
-    if (remaining > 0) {
-      _etaTimer = requestAnimationFrame(tick);
-    }
+    const secs    = Math.floor(elapsed);
+
+    // Pulse the bar gently back and forth so it always looks alive
+    const pct = 20 + 60 * (0.5 + 0.5 * Math.sin(elapsed * 0.6));
+    bar.style.transition = 'none';
+    bar.style.width = pct.toFixed(1) + '%';
+
+    label.textContent = stepName + ' · ' + secs + 's — hang tight, this can take a moment';
+
+    _etaTimer = requestAnimationFrame(tick);
   }
   _etaTimer = requestAnimationFrame(tick);
 }
 
 function clearEta() {
   if (_etaTimer) { cancelAnimationFrame(_etaTimer); _etaTimer = null; }
+  _etaStepName = '';
   const wrap = document.getElementById('eta-wrap');
   const bar  = document.getElementById('eta-bar');
-  if (wrap) wrap.style.display = 'none';
-  if (bar)  bar.style.width = '0%';
+  if (bar) {
+    bar.style.transition = 'width .4s ease';
+    bar.style.width = '100%';  // flash to 100% when step completes
+  }
+  setTimeout(() => {
+    if (wrap) wrap.style.display = 'none';
+    if (bar)  { bar.style.transition = 'none'; bar.style.width = '0%'; }
+  }, 400);
 }
 
 // ── Plan ─────────────────────────────────────────────────────────────────────
