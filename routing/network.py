@@ -476,19 +476,21 @@ def download_shade_features(
 
         # Tags that indicate meaningful tree cover / shade
         shade_tags = {
-            # Tree cover — original set
+            # Tree cover and natural terrain
             "natural":  ["wood", "tree_row", "tree",
-                         # Mountain / wilderness natural areas
-                         "scrub", "heath", "grassland", "wetland",
-                         "shrubbery"],
+                         "scrub", "heath", "shrubbery"],
             "landuse":  ["forest", "orchard", "vineyard",
-                         # Open recreational / wilderness land
                          "recreation_ground", "grass", "meadow",
                          "conservation"],
             "leisure":  ["park", "garden", "nature_reserve"],
-            # National parks, wilderness areas, protected land
-            "boundary": ["national_park", "protected_area",
-                         "forest", "wilderness"],
+            # Protected land — "national_forest" is the correct OSM tag for
+            # US National Forests (e.g. Los Padres, Sierra); "forest" alone
+            # is not a valid boundary value and was silently ignored by OSM.
+            "boundary": ["national_park", "national_forest",
+                         "protected_area", "wilderness",
+                         "regional_park"],
+            # Open space districts (common in Bay Area / California)
+            "ownership": ["national_forest", "state_forest"],
         }
 
         try:
@@ -508,13 +510,36 @@ def download_shade_features(
         # We sort large polygons first so the most impactful shade features
         # (big parks, forests) are always included even in very dense areas.
 
+        from shapely.ops import unary_union
+
         raw = []
         for geom in features.geometry:
             if geom is None:
                 continue
+
+            # GeometryCollection (returned for OSM Relations like open space
+            # districts and national forests) — extract all polygon members
+            if geom.geom_type == "GeometryCollection":
+                parts = [g for g in geom.geoms
+                         if g.geom_type in ("Polygon", "MultiPolygon")]
+                if parts:
+                    geom = unary_union(parts)
+                else:
+                    continue
+
             if geom.geom_type in ("Polygon", "MultiPolygon"):
                 if geom.area < MAX_AREA_DEG2:
                     raw.append((geom.area, geom.simplify(SIMPLIFY_TOL, preserve_topology=True)))
+                else:
+                    # Very large polygon (e.g. entire national forest boundary) —
+                    # clip it to the query radius before including so we don't
+                    # store a massive geometry and still get the shaded region.
+                    from shapely.geometry import Point
+                    centre = Point(lon, lat)
+                    clip   = centre.buffer(radius_m / 111320)  # degrees approx
+                    clipped = geom.intersection(clip)
+                    if not clipped.is_empty:
+                        raw.append((clipped.area, clipped.simplify(SIMPLIFY_TOL, preserve_topology=True)))
             elif geom.geom_type == "LineString":
                 # tree rows — buffer ~10m in degrees (~0.00009°)
                 raw.append((0.0, geom.simplify(SIMPLIFY_TOL).buffer(0.00009)))
