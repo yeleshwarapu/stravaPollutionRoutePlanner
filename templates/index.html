@@ -110,7 +110,8 @@
     border-right: 1px solid var(--border);
     display: flex;
     flex-direction: column;
-    overflow: hidden;
+    overflow-y: auto;
+    overflow-x: hidden;
     background: var(--surface);
   }
 
@@ -126,8 +127,8 @@
 
   /* Desktop: sidebar scrolls as one column; both panels stack vertically */
   .sidebar { flex-direction: column; overflow-y: auto; overflow-x: hidden; }
-  #panel-plan  { flex-shrink: 0; overflow: visible; }
-  #panel-routes { flex-shrink: 0; padding: 0 24px 24px; }
+  #panel-plan  { flex-shrink: 0; flex: none; overflow: visible; }
+  #panel-routes { flex-shrink: 0; flex: none; padding: 0 24px 24px; }
 
   /* ── Section label ── */
   .sec-label {
@@ -405,6 +406,7 @@
   .bar-fill.loop  { background: #a78bfa; }
   .bar-fill.paved { background: var(--green); }
   .bar-fill.shade { background: #4ade80; opacity: 0.7; }
+  .bar-fill.ozone { background: #f59e0b; }
   .bar-pct { font-size: 9px; color: var(--text-dim); width: 28px; text-align: right; }
 
   .gpx-btn {
@@ -633,6 +635,7 @@
 <div class="env-strip" id="env-strip">
   <div class="env-badge"><div class="env-badge-label">Air Quality</div><div class="env-badge-val" id="env-aq">—</div></div>
   <div class="env-badge"><div class="env-badge-label">UV Index Now</div><div class="env-badge-val" id="env-uv">—</div></div>
+  <div class="env-badge"><div class="env-badge-label">Ozone Now</div><div class="env-badge-val" id="env-ozone">—</div></div>
   <div class="env-badge"><div class="env-badge-label">Best Ride Window</div><div class="env-badge-val" id="env-window" style="font-size:11px">—</div></div>
   <div class="env-badge"><div class="env-badge-label">Peak UV</div><div class="env-badge-val" id="env-peak" style="font-size:11px">—</div></div>
   <div class="env-badge" id="env-advice-badge" style="display:none;flex:none;width:100%;border-right:none;border-top:1px solid var(--border)">
@@ -666,9 +669,9 @@
           <span class="dist-slider-label">Target ride length</span>
           <span class="dist-slider-val"><span id="dist-slider-val">8</span> mi</span>
         </div>
-        <input type="range" id="dist-slider" min="1" max="25" value="8" step="1" style="width:100%">
+        <input type="range" id="dist-slider" min="3" max="20" value="5" step="1" ...>
         <div class="dist-slider-ticks">
-          <span>1 mi</span><span>5 mi</span><span>10 mi</span><span>15 mi</span><span>25 mi</span>
+          <span>3 mi</span><span>5 mi</span><span>10 mi</span><span>15 mi</span><span>20 mi</span>
         </div>
       </div>
 
@@ -995,6 +998,7 @@ function buildCard(r, index) {
     </div>
     <div class="card-bars">
       <div class="bar-row"><span class="bar-label">AQ</span><div class="bar-track"><div class="bar-fill aq" style="width:0%" data-w="${r.score}%"></div></div><span class="bar-pct">${r.score}%</span></div>
+      <div class="bar-row"><span class="bar-label">Ozone</span><div class="bar-track"><div class="bar-fill ozone" style="width:0%" data-w="${Math.min(r.ozone??0,200)/200*100}%"></div></div><span class="bar-pct">${r.ozone_label??'—'}</span></div>
       <div class="bar-row"><span class="bar-label">Loop</span><div class="bar-track"><div class="bar-fill loop" style="width:0%" data-w="${r.loop_pct}%"></div></div><span class="bar-pct">${r.loop_pct}%</span></div>
       <div class="bar-row"><span class="bar-label">Paved</span><div class="bar-track"><div class="bar-fill paved" style="width:0%" data-w="${r.paved_pct}%"></div></div><span class="bar-pct">${r.paved_pct}%</span></div>
       <div class="bar-row"><span class="bar-label">Shade</span><div class="bar-track"><div class="bar-fill shade" style="width:0%" data-w="${r.shade_pct ?? 0}%"></div></div><span class="bar-pct">${r.shade_pct ?? 0}%</span></div>
@@ -1211,6 +1215,9 @@ function renderResult(result) {
   if (result.env && result.env.aq_label) {
     document.getElementById('env-aq').textContent     = result.env.aq_label + ' (' + result.env.pm25.toFixed(1) + ' μg/m³)';
     document.getElementById('env-uv').textContent     = result.env.uv_label + ' (' + result.env.uv.toFixed(1) + ')';
+    if (result.env.ozone != null) {
+      document.getElementById('env-ozone').textContent = (result.env.ozone_label || '—') + ' (' + result.env.ozone.toFixed(0) + ' μg/m³)';
+    }
     document.getElementById('env-window').textContent = result.env.uv_window || '—';
     const peakEl = document.getElementById('env-peak');
     if (result.env.uv_peak_uv != null) {
@@ -1253,13 +1260,12 @@ function renderResult(result) {
     byDist[dist].forEach((r, i) => wrap.appendChild(buildCard(r, r.index ?? i)));
   });
 
-  // Scroll sidebar to results
-  // On desktop scroll plan panel to terminal; on mobile we already switched tab
+  // Scroll to first route card on desktop
   if (window.innerWidth > 680) {
-    document.getElementById('panel-plan').scrollTo({
-      top: terminal.offsetTop - 16,
-      behavior: 'smooth',
-    });
+    const firstCard = document.querySelector('#routes-wrap .route-card');
+    if (firstCard) {
+      setTimeout(() => firstCard.scrollIntoView({ behavior: 'smooth', block: 'start' }), 150);
+    }
   }
 }
 
