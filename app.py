@@ -37,10 +37,17 @@ _jobs: Dict[str, Dict[str, Any]] = {}   # job_id → job dict
 _graph_cache: Dict[str, Any] = {}       # cache key → G
 
 # ── Elevation thresholds (ft gain per 10 miles, scaled linearly) ──────────────
+# Calibrated against real cycling data:
+#   Easy:   flat bike paths, gentle rail trails         ~0–250 ft/10mi
+#   Medium: rolling hills, typical suburban riding      ~250–600 ft/10mi
+#   Hard:   sustained climbs, hilly terrain             ~600–1200 ft/10mi
+#   Any:    no filter
+# Note: these are TOTAL GAIN normalised to 10 miles, not average grade.
+# A 25mi route at 250ft/10mi = 625ft total gain — genuinely easy.
 ELEVATION_THRESHOLDS = {
-    "easy":   (0,    400),
-    "medium": (400,  900),
-    "hard":   (900,  99999),
+    "easy":   (0,    250),
+    "medium": (200,  650),   # overlapping bands — allows graceful fallback
+    "hard":   (550,  99999),
     "any":    (0,    99999),
 }
 
@@ -72,12 +79,19 @@ def geocode_address(address: str) -> tuple[float, float, str]:
 
 
 # ── Elevation ─────────────────────────────────────────────────────────────────
-def fetch_elevation_gain_ft(G, path: list[int], sample_every: int = 15) -> float:
+def fetch_elevation_gain_ft(G, path: list[int], sample_every: int = None) -> float:
     """
     Sample elevation along a route via Open-Topo-Data and compute total gain in feet.
-    Samples every Nth node to limit API calls (max 100 locations per request).
+    Targets ~60 samples per route (max 100 per Open-Topo-Data request).
     """
-    sampled = path[::sample_every]
+    if len(path) < 2:
+        return 0.0
+    # Aim for ~60 evenly-spaced samples; always include first and last node
+    step = max(1, len(path) // 60)
+    indices = list(range(0, len(path), step))
+    if indices[-1] != len(path) - 1:
+        indices.append(len(path) - 1)
+    sampled = [path[i] for i in indices]
     if len(sampled) < 2:
         return 0.0
 
@@ -245,22 +259,49 @@ def _run_plan(job_id: str, req: PlanRequest):
                 G=G,
             )
 
-            # Filter by elevation difficulty
+            # Fetch elevation for every scored route so we can filter accurately
+            # and always show the gain value on the card regardless of mode.
             if req.elevation != "any":
                 log(f"  Fetching elevation data ({req.elevation} filter)…")
-                filtered = []
                 for r in scored:
-                    gain = fetch_elevation_gain_ft(G, r.path)
-                    r._elevation_gain_ft = gain   # stash on object
-                    if elevation_matches(gain, r.length_miles, req.elevation):
-                        filtered.append(r)
+                    r._elevation_gain_ft = fetch_elevation_gain_ft(G, r.path)
+
+                gains = [(r, r._elevation_gain_ft,
+                          r._elevation_gain_ft / r.length_miles * 10 if r.length_miles else 0)
+                         for r in scored]
+
+                # Log what we actually found so bad filters are diagnosable
+                gain_summary = ", ".join(
+                    f"{g:.0f}ft/10mi" for _, _, g in sorted(gains, key=lambda x: x[2])
+                )
+                log(f"  Gains found: [{gain_summary}]")
+
+                filtered = [r for r, _, g10 in gains
+                            if elevation_matches(r._elevation_gain_ft, r.length_miles, req.elevation)]
+
                 if not filtered:
-                    log(f"  No {req.elevation} routes found for {dist:.0f} mi — relaxing filter")
-                    filtered = scored   # fall back to unfiltered
-                scored = filtered
+                    # Graceful fallback cascade: hard→medium→easy→any
+                    fallback_order = {"hard": ["medium", "easy"], "medium": ["easy"], "easy": []}
+                    relaxed = None
+                    for fallback in fallback_order.get(req.elevation, []):
+                        relaxed_routes = [r for r, _, g10 in gains
+                                          if elevation_matches(r._elevation_gain_ft, r.length_miles, fallback)]
+                        if relaxed_routes:
+                            relaxed = fallback
+                            filtered = relaxed_routes
+                            break
+                    if not filtered:
+                        filtered = scored  # last resort: return all
+                        relaxed = "any"
+                    log(f"  No {req.elevation} routes found — showing {relaxed} instead")
+                else:
+                    log(f"  {len(filtered)} route(s) match {req.elevation} elevation")
+
+                # Re-sort filtered by score (elevation fetch doesn't change scores)
+                scored = sorted(filtered, key=lambda r: r.score, reverse=True)
             else:
                 for r in scored:
-                    r._elevation_gain_ft = None
+                    r._elevation_gain_ft = fetch_elevation_gain_ft(G, r.path)
 
             top = scored[:req.top]
             all_scored.extend(top)

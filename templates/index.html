@@ -967,9 +967,16 @@ function buildCard(r, index) {
   const card = document.createElement('div');
   card.className = 'route-card' + (r.grade === 'A' ? '' : ' teal');
 
+  const elevCat = r.elevation_ft > 0 ? (() => {
+    const per10 = r.elevation_ft / r.miles * 10;
+    if (per10 < 250)  return '<span style="color:var(--green)">easy</span>';
+    if (per10 < 550)  return '<span style="color:var(--amber)">medium</span>';
+    if (per10 < 1200) return '<span style="color:var(--red)">hard</span>';
+    return '<span style="color:var(--red)">very hard</span>';
+  })() : '';
   const elevHtml = r.elevation_ft > 0
-    ? `<div class="meta-item"><strong>Elev Gain</strong>${r.elevation_ft} ft</div>`
-    : '';
+    ? `<div class="meta-item"><strong>Elev Gain</strong>${r.elevation_ft} ft (${Math.round(r.elevation_ft / r.miles * 10)} ft/10mi) ${elevCat}</div>`
+    : '<div class="meta-item" style="color:var(--text-dim)"><strong>Elev Gain</strong>fetching…</div>';
 
   card.innerHTML = `
     <div class="card-top">
