@@ -1,0 +1,8 @@
+.git
+__pycache__
+*.pyc
+*.pyo
+.osmnx_cache
+output/
+*.bak
+.env

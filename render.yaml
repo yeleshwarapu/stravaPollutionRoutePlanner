@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: rcycle
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter          # free tier — upgrade to "standard" for more RAM
+    envVars:
+      - key: PORT
+        value: 8000
+    healthCheckPath: /
+    # Disk for persistent OSMnx cache — avoids re-downloading network on restart
+    # Remove this block if you're on the free plan (no persistent disk on free)
+    disk:
+      name: osmnx-cache
+      mountPath: /app/.osmnx_cache
+      sizeGB: 1
