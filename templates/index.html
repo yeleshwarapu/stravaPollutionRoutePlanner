@@ -124,6 +124,11 @@
   .sidebar-scroll::-webkit-scrollbar { width: 3px; }
   .sidebar-scroll::-webkit-scrollbar-thumb { background: var(--border); }
 
+  /* Desktop: sidebar scrolls as one column; both panels stack vertically */
+  .sidebar { flex-direction: column; overflow-y: auto; overflow-x: hidden; }
+  #panel-plan  { flex-shrink: 0; overflow: visible; }
+  #panel-routes { flex-shrink: 0; padding: 0 24px 24px; }
+
   /* ── Section label ── */
   .sec-label {
     font-size: 9px; letter-spacing: .25em; text-transform: uppercase;
@@ -547,8 +552,18 @@
       display: block;
     }
 
-    /* Sidebar scroll gets full height */
-    .sidebar-scroll { padding: 16px; }
+    /* Each panel fills the sidebar on mobile */
+    #panel-plan, #panel-routes {
+      position: absolute; inset: 0;
+      overflow-y: auto;
+      padding: 16px;
+      display: none;
+    }
+    #panel-plan.mobile-active, #panel-routes.mobile-active {
+      display: block;
+    }
+    /* Override: sidebar itself is the positioning context */
+    .sidebar { overflow: hidden; }
 
     /* Prevent iOS zoom on input focus — min font-size 16px */
     .addr-input { font-size: 16px; }
@@ -626,9 +641,9 @@
 
   <!-- ── Sidebar ── -->
   <aside class="sidebar">
-    <div class="sidebar-scroll">
 
-      <!-- Address -->
+    <!-- Plan panel: form inputs (always visible on desktop; tab-switched on mobile) -->
+    <div id="panel-plan" class="sidebar-scroll">
       <div class="sec-label">Origin</div>
       <div class="addr-wrap">
         <input class="addr-input" id="addr-input" type="text"
@@ -639,7 +654,6 @@
       </div>
       <div class="addr-result" id="addr-result"></div>
 
-      <!-- Distances -->
       <div class="sec-label" style="margin-top:20px">Distance</div>
       <div class="dist-slider-wrap">
         <div class="dist-slider-header">
@@ -652,24 +666,14 @@
         </div>
       </div>
 
-      <!-- Elevation -->
       <div class="sec-label" style="margin-top:20px">Elevation</div>
       <div class="elev-grid">
-        <button class="elev-btn any active" data-val="any">
-          <span class="elev-icon">◈</span>Any
-        </button>
-        <button class="elev-btn easy" data-val="easy">
-          <span class="elev-icon">⟋</span>Easy
-        </button>
-        <button class="elev-btn medium" data-val="medium">
-          <span class="elev-icon">⋀</span>Med
-        </button>
-        <button class="elev-btn hard" data-val="hard">
-          <span class="elev-icon">⋀⋀</span>Hard
-        </button>
+        <button class="elev-btn any active" data-val="any"><span class="elev-icon">◈</span>Any</button>
+        <button class="elev-btn easy" data-val="easy"><span class="elev-icon">⟋</span>Easy</button>
+        <button class="elev-btn medium" data-val="medium"><span class="elev-icon">⋀</span>Med</button>
+        <button class="elev-btn hard" data-val="hard"><span class="elev-icon">⋀⋀</span>Hard</button>
       </div>
 
-      <!-- Settings -->
       <div class="sec-label" style="margin-top:4px">Settings</div>
       <div class="slider-row">
         <span class="slider-label">Routes</span>
@@ -689,16 +693,14 @@
       </div>
 
       <button class="plan-btn" id="plan-btn">Plan Routes →</button>
-
-      <hr class="divider">
-
-      <!-- Terminal log -->
       <div class="terminal" id="terminal"></div>
-
-      <!-- Route cards -->
-      <div class="routes-wrap" id="routes-wrap"></div>
-
     </div>
+
+    <!-- Routes panel: scored cards (desktop: below form; mobile: own tab) -->
+    <div id="panel-routes" class="sidebar-scroll" style="display:none">
+      <div class="routes-wrap" id="routes-wrap"></div>
+    </div>
+
   </aside>
 
   <!-- ── Map panel ── -->
@@ -723,6 +725,9 @@
 <div class="mobile-tabs" id="mobile-tabs">
   <button class="mobile-tab active" id="tab-plan" onclick="switchTab('plan')">
     <span class="tab-icon">⊕</span>Plan
+  </button>
+  <button class="mobile-tab" id="tab-routes" onclick="switchTab('routes')">
+    <span class="tab-icon">☰</span>Routes
   </button>
   <button class="mobile-tab" id="tab-map" onclick="switchTab('map')">
     <span class="tab-icon">◎</span>Map
@@ -1098,9 +1103,9 @@ function renderResult(result) {
   frame.srcdoc = result.map_html;
   frame.classList.add('visible');
 
-  // On mobile, auto-switch to the map tab once routes are ready
+  // On mobile, auto-switch to the Routes tab so user sees scored cards first
   if (window.innerWidth <= 680) {
-    setTimeout(() => switchTab('map'), 400);
+    setTimeout(() => switchTab('routes'), 300);
   }
 
   // Env strip
@@ -1112,19 +1117,13 @@ function renderResult(result) {
     document.getElementById('env-strip').classList.add('visible');
   }
 
+  // Show the routes panel (hidden by default on mobile)
+  const panelRoutes = document.getElementById('panel-routes');
+  if (panelRoutes) panelRoutes.style.display = '';
+
   // Route cards
   const wrap = document.getElementById('routes-wrap');
   wrap.innerHTML = '';
-
-  // On mobile, inject a prominent "View Map" button at the top of results
-  if (window.innerWidth <= 680) {
-    const mapBtn = document.createElement('button');
-    mapBtn.className = 'plan-btn';
-    mapBtn.style.cssText = 'background:var(--teal);margin-bottom:16px;margin-top:0';
-    mapBtn.textContent = 'View Map →';
-    mapBtn.onclick = () => switchTab('map');
-    wrap.appendChild(mapBtn);
-  }
 
   // Group by target distance
   const byDist = {};
@@ -1143,10 +1142,13 @@ function renderResult(result) {
   });
 
   // Scroll sidebar to results
-  document.querySelector('.sidebar-scroll').scrollTo({
-    top: terminal.offsetTop - 16,
-    behavior: 'smooth',
-  });
+  // On desktop scroll plan panel to terminal; on mobile we already switched tab
+  if (window.innerWidth > 680) {
+    document.getElementById('panel-plan').scrollTo({
+      top: terminal.offsetTop - 16,
+      behavior: 'smooth',
+    });
+  }
 }
 
 document.getElementById('plan-btn').addEventListener('click', startPlan);
@@ -1154,34 +1156,71 @@ document.getElementById('addr-input').addEventListener('keydown', e => {
   if (e.key === 'Enter' && e.ctrlKey) startPlan();
 });
 
+// Initialise mobile panel state on load
+if (window.innerWidth <= 680) {
+  switchTab('plan');
+}
+
 // ── Mobile tab switching ──────────────────────────────────────────────────────
 function switchTab(tab) {
-  const sidebar  = document.querySelector('.sidebar');
-  const mapPanel = document.querySelector('.map-panel');
-  const tabPlan  = document.getElementById('tab-plan');
-  const tabMap   = document.getElementById('tab-map');
-  if (!tabPlan || !tabMap) return; // not on mobile / tabs not in DOM yet
+  if (window.innerWidth > 680) return; // desktop: no tab switching needed
 
-  if (tab === 'map') {
+  const sidebar    = document.querySelector('.sidebar');
+  const mapPanel   = document.querySelector('.map-panel');
+  const panelPlan  = document.getElementById('panel-plan');
+  const panelRoutes= document.getElementById('panel-routes');
+  const tabPlan    = document.getElementById('tab-plan');
+  const tabRoutes  = document.getElementById('tab-routes');
+  const tabMap     = document.getElementById('tab-map');
+  if (!tabPlan) return;
+
+  // Reset all
+  [tabPlan, tabRoutes, tabMap].forEach(t => t && t.classList.remove('active'));
+  [panelPlan, panelRoutes].forEach(p => p && p.classList.remove('mobile-active'));
+  sidebar.classList.remove('mobile-hidden');
+  mapPanel.classList.remove('mobile-active');
+
+  if (tab === 'plan') {
+    tabPlan.classList.add('active');
+    panelPlan.classList.add('mobile-active');
+
+  } else if (tab === 'routes') {
+    tabRoutes.classList.add('active');
+    panelRoutes.classList.add('mobile-active');
+
+  } else if (tab === 'map') {
+    tabMap.classList.add('active');
     sidebar.classList.add('mobile-hidden');
     mapPanel.classList.add('mobile-active');
-    tabPlan.classList.remove('active');
-    tabMap.classList.add('active');
-    // Make sure the map iframe is visible
+
+    // Ensure iframe is visible
     const frame = document.getElementById('map-frame');
     if (frame && frame.srcdoc && !frame.classList.contains('visible')) {
       frame.classList.add('visible');
     }
-  } else {
-    sidebar.classList.remove('mobile-hidden');
-    mapPanel.classList.remove('mobile-active');
-    tabPlan.classList.add('active');
-    tabMap.classList.remove('active');
+    // Hide the iframe's internal sidebar so only the Leaflet map shows
+    if (frame && frame.contentDocument) {
+      try {
+        const iframeDoc = frame.contentDocument;
+        let styleEl = iframeDoc.getElementById('mobile-hide-sidebar');
+        if (!styleEl) {
+          styleEl = iframeDoc.createElement('style');
+          styleEl.id = 'mobile-hide-sidebar';
+          styleEl.textContent = '#sidebar { display: none !important; } #map { width: 100% !important; }';
+          iframeDoc.head.appendChild(styleEl);
+          // Tell Leaflet to recalc its size after sidebar disappears
+          setTimeout(() => {
+            if (frame.contentWindow && frame.contentWindow.map) {
+              frame.contentWindow.map.invalidateSize();
+            }
+          }, 50);
+        }
+      } catch(e) { /* cross-origin guard */ }
+    }
   }
 }
 
-// Auto-switch to map tab on mobile when results arrive
-// (injected into renderResult via the mobile-tabs check below)
+
 </script>
 </body>
 </html>
