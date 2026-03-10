@@ -110,7 +110,8 @@
     border-right: 1px solid var(--border);
     display: flex;
     flex-direction: column;
-    overflow: hidden;
+    overflow-y: auto;
+    overflow-x: hidden;
     background: var(--surface);
   }
 
@@ -126,8 +127,8 @@
 
   /* Desktop: sidebar scrolls as one column; both panels stack vertically */
   .sidebar { flex-direction: column; overflow-y: auto; overflow-x: hidden; }
-  #panel-plan  { flex-shrink: 0; overflow: visible; }
-  #panel-routes { flex-shrink: 0; padding: 0 24px 24px; }
+  #panel-plan  { flex-shrink: 0; flex: none; overflow: visible; }
+  #panel-routes { flex-shrink: 0; flex: none; height: auto; padding: 0 24px 24px; }
 
   /* ── Section label ── */
   .sec-label {
@@ -1253,19 +1254,14 @@ function renderResult(result) {
     byDist[dist].forEach((r, i) => wrap.appendChild(buildCard(r, r.index ?? i)));
   });
 
-  // Scroll sidebar to results
-  // On desktop the sidebar itself scrolls — scroll it to show the routes panel.
-  // On mobile we already switched tab above.
+  // Scroll sidebar to results — sidebar itself scrolls on desktop
   if (window.innerWidth > 680) {
     const sidebar = document.querySelector('.sidebar');
     const panelRoutesEl = document.getElementById('panel-routes');
     if (sidebar && panelRoutesEl) {
       setTimeout(() => {
-        sidebar.scrollTo({
-          top: panelRoutesEl.offsetTop - 16,
-          behavior: 'smooth',
-        });
-      }, 50); // small delay lets the DOM finish rendering cards first
+        sidebar.scrollTop = panelRoutesEl.offsetTop - 16;
+      }, 100);
     }
   }
 }
