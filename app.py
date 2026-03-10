@@ -17,6 +17,8 @@ import json
 import tempfile
 import threading
 import time
+import pickle
+import shutil
 from typing import Optional, Dict, Any
 
 from fastapi import FastAPI, Request
@@ -32,9 +34,77 @@ app = FastAPI(title="R'Cycle Co-Op")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
+# ── Disk cache ────────────────────────────────────────────────────────────────
+# Persists OSMnx graphs and shade polygons across server restarts.
+# Stored under /data on HuggingFace Spaces (persistent volume) or a local
+# .cache dir when running locally. Capped at DISK_CACHE_LIMIT_MB to stay
+# safely within the 1 GB HuggingFace storage budget.
+#
+# Layout:  DISK_CACHE_DIR/<cache_key>.pkl
+# Each file is one pickled object (graph or shade poly list).
+# Set RCYCLE_CACHE_DIR=/data in your HF Space secrets/env vars.
+
+DISK_CACHE_DIR = os.environ.get(
+    "RCYCLE_CACHE_DIR",
+    os.path.join(BASE_DIR, ".cache"),   # local fallback
+)
+DISK_CACHE_LIMIT_MB = int(os.environ.get("RCYCLE_CACHE_LIMIT_MB", "700"))
+
+os.makedirs(DISK_CACHE_DIR, exist_ok=True)
+
+
+def _cache_path(key: str) -> str:
+    safe = key.replace(",", "_").replace(" ", "_").replace("/", "_")
+    return os.path.join(DISK_CACHE_DIR, safe + ".pkl")
+
+
+def _cache_dir_mb() -> float:
+    total = sum(
+        os.path.getsize(os.path.join(DISK_CACHE_DIR, f))
+        for f in os.listdir(DISK_CACHE_DIR)
+        if f.endswith(".pkl")
+    )
+    return total / (1024 * 1024)
+
+
+def _evict_oldest() -> None:
+    files = [
+        (os.path.getmtime(os.path.join(DISK_CACHE_DIR, f)),
+         os.path.join(DISK_CACHE_DIR, f))
+        for f in os.listdir(DISK_CACHE_DIR)
+        if f.endswith(".pkl")
+    ]
+    if files:
+        files.sort()
+        os.remove(files[0][1])
+
+
+def disk_cache_get(key: str):
+    path = _cache_path(key)
+    if os.path.exists(path):
+        try:
+            with open(path, "rb") as f:
+                return pickle.load(f)
+        except Exception:
+            os.remove(path)
+    return None
+
+
+def disk_cache_set(key: str, obj) -> None:
+    while _cache_dir_mb() > DISK_CACHE_LIMIT_MB:
+        _evict_oldest()
+    try:
+        path = _cache_path(key)
+        with open(path + ".tmp", "wb") as f:
+            pickle.dump(obj, f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(path + ".tmp", path)
+    except Exception:
+        pass  # non-fatal; in-memory cache still works
+
+
 # ── In-memory state ───────────────────────────────────────────────────────────
 _jobs: Dict[str, Dict[str, Any]] = {}   # job_id → job dict
-_graph_cache: Dict[str, Any] = {}       # cache key → G
+_graph_cache: Dict[str, Any] = {}       # cache key → G  (warm in-memory layer)
 
 # ── Elevation thresholds (ft gain per 10 miles, scaled linearly) ──────────────
 # Calibrated against real cycling data:
@@ -236,11 +306,18 @@ def _run_plan(job_id: str, req: PlanRequest):
             log(f"Loading cached road network…", step="network", eta=2)
             G = cached_G
         else:
-            _net_eta = max(10, int(8 + radius_mi ** 1.4 * 0.4))
-            log(f"Downloading {req.network} network within {radius_mi:.1f} mi…", step="network", eta=_net_eta)
-            from routing.network import download_network
-            G = download_network(lat, lon, radius_mi, req.network)
-            _graph_cache[cache_key] = G
+            # Try disk cache before hitting the network
+            G = disk_cache_get(cache_key)
+            if G is not None:
+                log(f"Loading road network from disk cache…", step="network", eta=3)
+                _graph_cache[cache_key] = G
+            else:
+                _net_eta = max(10, int(8 + radius_mi ** 1.4 * 0.4))
+                log(f"Downloading {req.network} network within {radius_mi:.1f} mi…", step="network", eta=_net_eta)
+                from routing.network import download_network
+                G = download_network(lat, lon, radius_mi, req.network)
+                _graph_cache[cache_key] = G
+                disk_cache_set(cache_key, G)
             log(f"  Network: {len(G.nodes):,} nodes, {len(G.edges):,} edges")
 
         from routing.network import nearest_node, node_coords, download_shade_features
@@ -252,10 +329,16 @@ def _run_plan(job_id: str, req: PlanRequest):
         if shade_cache_key in _graph_cache:
             shade_polys = _graph_cache[shade_cache_key]
         else:
-            _shade_eta = max(5, int(4 + radius_mi ** 1.2 * 0.2))
-            log("Fetching tree cover data…", step="shade", eta=_shade_eta)
-            shade_polys = download_shade_features(lat, lon, radius_mi)
-            _graph_cache[shade_cache_key] = shade_polys
+            shade_polys = disk_cache_get(shade_cache_key)
+            if shade_polys is not None:
+                log("Loading tree cover from disk cache…", step="shade", eta=1)
+                _graph_cache[shade_cache_key] = shade_polys
+            else:
+                _shade_eta = max(5, int(4 + radius_mi ** 1.2 * 0.2))
+                log("Fetching tree cover data…", step="shade", eta=_shade_eta)
+                shade_polys = download_shade_features(lat, lon, radius_mi)
+                _graph_cache[shade_cache_key] = shade_polys
+                disk_cache_set(shade_cache_key, shade_polys)
             log(f"  Found {len(shade_polys)} shade features")
 
         # 5. Generate + score routes

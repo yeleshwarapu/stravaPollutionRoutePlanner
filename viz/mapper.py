@@ -111,6 +111,9 @@ def build_map(
             "pm25":         round(route.pm25, 1),
             "aqi_label":    route.aqi_label,
             "aqi_colour":   route.aqi_colour,
+            "ozone":        round(route.ozone, 1),
+            "ozone_label":  route.ozone_label,
+            "ozone_colour": route.ozone_colour,
             "uv":           round(route.uv, 1),
             "uv_label":     route.uv_label,
             "uv_colour":    route.uv_colour,
@@ -193,13 +196,14 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM Mon
     </div>
     <div id="env-bar">
       <div class="env-badge"><div>Air Quality</div><div class="val" id="aq-val">&#8212;</div></div>
+      <div class="env-badge"><div>Ozone</div><div class="val" id="ozone-val">&#8212;</div></div>
       <div class="env-badge"><div>UV Index</div><div class="val" id="uv-val">&#8212;</div></div>
       <div class="env-badge"><div>Best Window</div><div class="val" style="font-size:11px" id="win-val">""" + (uv_win_str or "&#8212;") + """</div></div>
     </div>
     <div id="dist-tabs"></div>
     <div id="route-list"></div>
     <div id="footer">
-      Scored: PM2.5 (40%) &middot; UV (20%) &middot; Shade (15%) &middot; Loop (15%) &middot; Paved (10%)
+      Scored: PM2.5 (20%) &middot; Ozone (10%) &middot; UV (20%) &middot; Shade (25%) &middot; Loop (15%) &middot; Paved (10%)
       """ + (f'<div class="uv-win">&#9889; Best UV window: {uv_win_str}</div>' if uv_win_str else "") + """
     </div>
   </div>
@@ -250,6 +254,8 @@ if (ROUTES.length > 0) {
   const r = ROUTES[0];
   const aqEl = document.getElementById('aq-val');
   aqEl.textContent = r.aqi_label; aqEl.style.color = r.aqi_colour;
+  const ozEl = document.getElementById('ozone-val');
+  if (ozEl) { ozEl.textContent = r.ozone_label; ozEl.style.color = r.ozone_colour; }
   const uvEl = document.getElementById('uv-val');
   uvEl.textContent = r.uv_label + ' (' + r.uv + ')'; uvEl.style.color = r.uv_colour;
 }
@@ -288,7 +294,9 @@ function renderCards() {
       '</div>' +
       '<div class="card-metrics">' +
         '<div class="metric"><div class="ml">Air Quality</div><div class="mv"><span class="dot" style="background:' + r.aqi_colour + '"></span>' + r.aqi_label + '</div></div>' +
-        '<div class="metric"><div class="ml">PM2.5</div><div class="mv">' + r.pm25 + ' \u03bcg/m\u00b3</div></div>' +
+        '<div class="metric"><div class="ml">PM2.5</div><div class="mv">' + r.pm25 + ' μg/m³</div></div>' +
+        '<div class="metric"><div class="ml">Ozone</div><div class="mv"><span class="dot" style="background:' + r.ozone_colour + '"></span>' + r.ozone_label + '</div></div>' +
+        '<div class="metric"><div class="ml">Ozone (μg/m³)</div><div class="mv">' + r.ozone + '</div></div>' +
         '<div class="metric"><div class="ml">UV Index</div><div class="mv"><span class="dot" style="background:' + r.uv_colour + '"></span>' + r.uv_label + '</div></div>' +
         '<div class="metric"><div class="ml">Paved / Loop</div><div class="mv">' + r.paved + '% / ' + r.loop + '%</div></div>' +
       '</div>';
