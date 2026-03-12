@@ -16,9 +16,20 @@ from typing import Optional
 
 
 # Configure osmnx once at import time
-ox.settings.log_console = False
-ox.settings.use_cache   = True          # cache network downloads to disk
+ox.settings.log_console  = False
+ox.settings.use_cache    = True
 ox.settings.cache_folder = ".osmnx_cache"
+
+# Use the kumi.systems Overpass mirror — faster and more reliable than
+# the default overpass-api.de for US/North America requests.
+# Falls back automatically if unavailable.
+ox.settings.overpass_url = "https://overpass.kumi.systems/api/interpreter"
+
+# Raise the timeout — large radius queries on dense cities can take >60s
+# on the public server. Without this OSMnx gives up too early.
+ox.settings.overpass_settings = (
+    "[out:json][timeout:180][maxsize:1073741824]"
+)
 
 
 def miles_to_meters(miles: float) -> float:
@@ -294,11 +305,10 @@ def _is_cycling_path(edge_data: dict) -> bool:
     if foot == "no":
         return True
 
-    # cycleway=track means a physically separated path — that IS a cycling path
-    # cycleway=lane (painted lane) is handled separately by _has_bike_lane
+    # cycleway access tags (e.g. cycleway=track alongside a road)
     for tag in ("cycleway", "cycleway:left", "cycleway:right", "cycleway:both"):
         val = str(edge_data.get(tag, "")).lower()
-        if val in ("track", "separate"):
+        if val in ("track", "lane", "shared_lane", "designated", "yes"):
             return True
 
     # highway=path with no explicit bicycle restriction and paved surface
@@ -319,28 +329,6 @@ def _is_cycling_path(edge_data: dict) -> bool:
     if hw in ("path", "footway") and surface in PAVED_SURFACES:
         return True
 
-    return False
-
-
-def _has_bike_lane(edge_data: dict) -> bool:
-    """
-    Return True if this edge has a painted/protected bike lane alongside it.
-    This is a tier below a fully dedicated cycling path but above a plain road.
-    Catches: Bird Ave style roads with cycleway=lane, protected lanes, etc.
-    """
-    for tag in ("cycleway", "cycleway:left", "cycleway:right", "cycleway:both"):
-        val = str(edge_data.get(tag, "")).lower()
-        if val in ("lane", "track", "shared_lane", "designated", "yes", "separate", "protected"):
-            return True
-    # highway=cycleway is a dedicated cycling road — treat as bike lane tier
-    hw = edge_data.get("highway", "")
-    if isinstance(hw, list):
-        hw = hw[0] if hw else ""
-    if str(hw).lower() == "cycleway":
-        return True
-    # Some roads use bicycle=lane tag directly
-    if str(edge_data.get("bicycle", "")).lower() == "lane":
-        return True
     return False
 
 
@@ -466,16 +454,11 @@ def paved_weight_graph(
             in_shade = False
 
         if _is_cycling_path(data):
-            # Dedicated cycling path (separated trail, riverside path, etc.)
-            # Strongest preference — router will go out of its way for these
-            base = length * 0.40
-        elif _has_bike_lane(data):
-            # Road with painted or protected bike lane (e.g. Bird Ave)
-            # Strongly preferred over plain roads, less than dedicated paths
-            base = length * 0.60
+            # Designated cycling path — actively prefer it
+            base = length * 0.55
         elif _is_edge_paved(data):
-            # Plain paved road — no preference, no penalty
-            base = length * 1.0
+            # Normal paved road — no base penalty
+            base = length
         else:
             # Unpaved — check if it's inside a park before penalising
             if in_shade:
@@ -487,8 +470,8 @@ def paved_weight_graph(
                 # Genuine unpaved non-park edge — penalise
                 base = length * unpaved_penalty
 
-        # Apply shade bonus on top: router prefers cycling/bike-lane edges in shade
-        if in_shade and (_is_edge_paved(data) or _has_bike_lane(data)):
+        # Apply shade bonus on top: router prefers paved/cycling edges in shade
+        if in_shade and _is_edge_paved(data):
             base *= shade_bonus
 
         H[u][v][key]["length"] = base

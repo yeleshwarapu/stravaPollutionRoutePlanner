@@ -17,8 +17,6 @@ import json
 import tempfile
 import threading
 import time
-import pickle
-import shutil
 from typing import Optional, Dict, Any
 
 from fastapi import FastAPI, Request
@@ -34,77 +32,45 @@ app = FastAPI(title="R'Cycle Co-Op")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
-# ── Disk cache ────────────────────────────────────────────────────────────────
-# Persists OSMnx graphs and shade polygons across server restarts.
-# Stored under /data on HuggingFace Spaces (persistent volume) or a local
-# .cache dir when running locally. Capped at DISK_CACHE_LIMIT_MB to stay
-# safely within the 1 GB HuggingFace storage budget.
-#
-# Layout:  DISK_CACHE_DIR/<cache_key>.pkl
-# Each file is one pickled object (graph or shade poly list).
-# Set RCYCLE_CACHE_DIR=/data in your HF Space secrets/env vars.
-
-DISK_CACHE_DIR = os.environ.get(
-    "RCYCLE_CACHE_DIR",
-    os.path.join(BASE_DIR, ".cache"),   # local fallback
-)
-DISK_CACHE_LIMIT_MB = int(os.environ.get("RCYCLE_CACHE_LIMIT_MB", "700"))
-
-os.makedirs(DISK_CACHE_DIR, exist_ok=True)
-
-
-def _cache_path(key: str) -> str:
-    safe = key.replace(",", "_").replace(" ", "_").replace("/", "_")
-    return os.path.join(DISK_CACHE_DIR, safe + ".pkl")
-
-
-def _cache_dir_mb() -> float:
-    total = sum(
-        os.path.getsize(os.path.join(DISK_CACHE_DIR, f))
-        for f in os.listdir(DISK_CACHE_DIR)
-        if f.endswith(".pkl")
-    )
-    return total / (1024 * 1024)
-
-
-def _evict_oldest() -> None:
-    files = [
-        (os.path.getmtime(os.path.join(DISK_CACHE_DIR, f)),
-         os.path.join(DISK_CACHE_DIR, f))
-        for f in os.listdir(DISK_CACHE_DIR)
-        if f.endswith(".pkl")
-    ]
-    if files:
-        files.sort()
-        os.remove(files[0][1])
-
-
-def disk_cache_get(key: str):
-    path = _cache_path(key)
-    if os.path.exists(path):
-        try:
-            with open(path, "rb") as f:
-                return pickle.load(f)
-        except Exception:
-            os.remove(path)
-    return None
-
-
-def disk_cache_set(key: str, obj) -> None:
-    while _cache_dir_mb() > DISK_CACHE_LIMIT_MB:
-        _evict_oldest()
-    try:
-        path = _cache_path(key)
-        with open(path + ".tmp", "wb") as f:
-            pickle.dump(obj, f, protocol=pickle.HIGHEST_PROTOCOL)
-        os.replace(path + ".tmp", path)
-    except Exception:
-        pass  # non-fatal; in-memory cache still works
-
-
 # ── In-memory state ───────────────────────────────────────────────────────────
 _jobs: Dict[str, Dict[str, Any]] = {}   # job_id → job dict
-_graph_cache: Dict[str, Any] = {}       # cache key → G  (warm in-memory layer)
+_graph_cache: Dict[str, Any] = {}       # cache key → G
+
+# ── Background pre-warm ────────────────────────────────────────────────────────
+# Download + cache networks for common cities in a background thread at startup.
+# Users in these cities skip the Overpass wait entirely on their first run.
+# Runs silently — failures are ignored so a bad mirror doesn't block startup.
+_PREWARM_CITIES = [
+    # (lat, lon, label)   — 10mi radius covers most loop distances
+    (37.7749, -122.4194, "San Francisco"),
+    (34.0522, -118.2437, "Los Angeles"),
+    (40.7128, -74.0060,  "New York"),
+    (41.8781, -87.6298,  "Chicago"),
+    (47.6062, -122.3321, "Seattle"),
+    (30.2672, -97.7431,  "Austin"),
+    (33.4484, -112.0740, "Phoenix"),
+    (39.9526, -75.1652,  "Philadelphia"),
+    (25.7617, -80.1918,  "Miami"),
+    (45.5051, -122.6750, "Portland"),
+]
+
+def _prewarm_cache():
+    """Pre-download bike networks for common cities into OSMnx disk cache."""
+    import time
+    from routing.network import download_network
+    for lat, lon, label in _PREWARM_CITIES:
+        cache_key = f"{round(lat,3)},{round(lon,3)},bike,10"
+        if cache_key in _graph_cache:
+            continue
+        try:
+            G = download_network(lat, lon, 10.0, "bike")
+            _graph_cache[cache_key] = G
+        except Exception:
+            pass   # mirror down or rate limited — skip silently
+        time.sleep(2)  # be a polite API citizen
+
+import threading
+threading.Thread(target=_prewarm_cache, daemon=True).start()
 
 # ── Elevation thresholds (ft gain per 10 miles, scaled linearly) ──────────────
 # Calibrated against real cycling data:
@@ -250,20 +216,17 @@ def _run_plan(job_id: str, req: PlanRequest):
         uv_window = None
         try:
             from data.uv_data import uv_window_description, get_current_uv, uv_category
-            from data.air_quality import get_current_pm25, pm25_to_aqi_category, get_current_ozone, ozone_to_aqi_category
+            from data.air_quality import get_current_pm25, pm25_to_aqi_category
             uv_now    = get_current_uv(lat, lon)
             uv_lab, _ = uv_category(uv_now)
             uv_desc   = uv_window_description(lat, lon)
             uv_window = uv_desc["best_window"]
             pm25_now  = get_current_pm25(lat, lon)
             aq_lab, _ = pm25_to_aqi_category(pm25_now)
-            ozone_now    = get_current_ozone(lat, lon)
-            ozone_lab, _ = ozone_to_aqi_category(ozone_now)
             log(f"  UV now     : {uv_now:.1f} ({uv_lab})")
             log(f"  Best window: {uv_desc['window_label']} (UV {uv_desc['window_uv']}, {uv_desc['window_category']})")
             log(f"  UV peak    : {uv_desc['peak_label']} — {uv_desc['peak_uv']} ({uv_desc['peak_category']})")
             log(f"  PM2.5 now  : {pm25_now:.1f} μg/m³ ({aq_lab})")
-            log(f"  Ozone now  : {ozone_now:.1f} μg/m³ ({ozone_lab})")
             job["env"] = {
                 "uv":             uv_now,
                 "uv_label":       uv_lab,
@@ -275,8 +238,6 @@ def _run_plan(job_id: str, req: PlanRequest):
                 "uv_peak_cat":    uv_desc["peak_category"],
                 "pm25":           pm25_now,
                 "aq_label":       aq_lab,
-                "ozone":          ozone_now,
-                "ozone_label":    ozone_lab,
             }
         except Exception as e:
             log(f"  Environmental fetch failed: {e}")
@@ -306,18 +267,11 @@ def _run_plan(job_id: str, req: PlanRequest):
             log(f"Loading cached road network…", step="network", eta=2)
             G = cached_G
         else:
-            # Try disk cache before hitting the network
-            G = disk_cache_get(cache_key)
-            if G is not None:
-                log(f"Loading road network from disk cache…", step="network", eta=3)
-                _graph_cache[cache_key] = G
-            else:
-                _net_eta = max(10, int(8 + radius_mi ** 1.4 * 0.4))
-                log(f"Downloading {req.network} network within {radius_mi:.1f} mi…", step="network", eta=_net_eta)
-                from routing.network import download_network
-                G = download_network(lat, lon, radius_mi, req.network)
-                _graph_cache[cache_key] = G
-                disk_cache_set(cache_key, G)
+            _net_eta = max(10, int(8 + radius_mi ** 1.4 * 0.4))
+            log(f"Downloading {req.network} network within {radius_mi:.1f} mi…", step="network", eta=_net_eta)
+            from routing.network import download_network
+            G = download_network(lat, lon, radius_mi, req.network)
+            _graph_cache[cache_key] = G
             log(f"  Network: {len(G.nodes):,} nodes, {len(G.edges):,} edges")
 
         from routing.network import nearest_node, node_coords, download_shade_features
@@ -329,16 +283,10 @@ def _run_plan(job_id: str, req: PlanRequest):
         if shade_cache_key in _graph_cache:
             shade_polys = _graph_cache[shade_cache_key]
         else:
-            shade_polys = disk_cache_get(shade_cache_key)
-            if shade_polys is not None:
-                log("Loading tree cover from disk cache…", step="shade", eta=1)
-                _graph_cache[shade_cache_key] = shade_polys
-            else:
-                _shade_eta = max(5, int(4 + radius_mi ** 1.2 * 0.2))
-                log("Fetching tree cover data…", step="shade", eta=_shade_eta)
-                shade_polys = download_shade_features(lat, lon, radius_mi)
-                _graph_cache[shade_cache_key] = shade_polys
-                disk_cache_set(shade_cache_key, shade_polys)
+            _shade_eta = max(5, int(4 + radius_mi ** 1.2 * 0.2))
+            log("Fetching tree cover data…", step="shade", eta=_shade_eta)
+            shade_polys = download_shade_features(lat, lon, radius_mi)
+            _graph_cache[shade_cache_key] = shade_polys
             log(f"  Found {len(shade_polys)} shade features")
 
         # 5. Generate + score routes
@@ -363,40 +311,16 @@ def _run_plan(job_id: str, req: PlanRequest):
                 G=G,
             )
 
-            # Fetch elevation in parallel, capped to a sensible candidate pool.
-            # For filtered modes we need enough candidates to have a good chance
-            # of finding matches; for "any" we only need the final top-N.
-            # Either way we never make more than ELEV_POOL sequential calls.
-            ELEV_POOL = req.top * 4  # e.g. top=3 → sample up to 12 candidates
-
+            # Fetch elevation for every scored route so we can filter accurately
+            # and always show the gain value on the card regardless of mode.
             if req.elevation != "any":
-                elev_candidates = scored[:max(ELEV_POOL, req.top * 4)]
-                log(f"  Fetching elevation data ({req.elevation} filter, {len(elev_candidates)} candidates)…")
-            else:
-                elev_candidates = scored[:req.top]
-                log(f"  Fetching elevation data ({len(elev_candidates)} routes)…")
+                log(f"  Fetching elevation data ({req.elevation} filter)…")
+                for r in scored:
+                    r._elevation_gain_ft = fetch_elevation_gain_ft(G, r.path)
 
-            from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
-            elev_workers = min(len(elev_candidates), 6)
-            with ThreadPoolExecutor(max_workers=elev_workers) as pool:
-                future_map = {pool.submit(fetch_elevation_gain_ft, G, r.path): r
-                              for r in elev_candidates}
-                for fut in _as_completed(future_map):
-                    route = future_map[fut]
-                    try:
-                        route._elevation_gain_ft = fut.result()
-                    except Exception:
-                        route._elevation_gain_ft = 0.0
-
-            # Routes not sampled get a sentinel so they still serialise safely
-            for r in scored:
-                if not hasattr(r, "_elevation_gain_ft"):
-                    r._elevation_gain_ft = 0.0
-
-            if req.elevation != "any":
                 gains = [(r, r._elevation_gain_ft,
                           r._elevation_gain_ft / r.length_miles * 10 if r.length_miles else 0)
-                         for r in elev_candidates]
+                         for r in scored]
 
                 # Log what we actually found so bad filters are diagnosable
                 gain_summary = ", ".join(
@@ -427,6 +351,9 @@ def _run_plan(job_id: str, req: PlanRequest):
 
                 # Re-sort filtered by score (elevation fetch doesn't change scores)
                 scored = sorted(filtered, key=lambda r: r.score, reverse=True)
+            else:
+                for r in scored:
+                    r._elevation_gain_ft = fetch_elevation_gain_ft(G, r.path)
 
             top = scored[:req.top]
             all_scored.extend(top)
@@ -488,27 +415,23 @@ def _run_plan(job_id: str, req: PlanRequest):
         route_cards = []
         for i, r in enumerate(all_scored):
             card = {
-                "index":           i,
-                "grade":           r.grade(),
-                "miles":           round(r.length_miles, 1),
-                "target_miles":    round(r.loop.target_miles),
-                "direction":       _bearing_label(r.loop.bearing_deg),
-                "pm25":            round(r.pm25, 1),
-                "aqi_label":       r.aqi_label,
-                "aqi_colour":      r.aqi_colour,
-                "ozone":           round(r.ozone, 1),
-                "ozone_label":     r.ozone_label,
-                "ozone_colour":    r.ozone_colour,
-                "uv":              round(r.uv, 1),
-                "uv_label":        r.uv_label,
-                "uv_colour":       r.uv_colour,
-                "loop_pct":        round(r.loop.loop_ratio * 100),
-                "paved_pct":       round(r.paved_frac * 100),
-                "shade_pct":       round(r.shade_frac * 100),
-                "score":           round(r.score * 100),
-                "score_breakdown": {k: round(v * 100) for k, v in r.score_breakdown.items()},
-                "elevation_ft":    round(getattr(r, "_elevation_gain_ft", 0) or 0),
-                "gpx_id":          gpx_ids[i] if i < len(gpx_ids) else None,
+                "index":         i,
+                "grade":         r.grade(),
+                "miles":         round(r.length_miles, 1),
+                "target_miles":  round(r.loop.target_miles),
+                "direction":     _bearing_label(r.loop.bearing_deg),
+                "pm25":          round(r.pm25, 1),
+                "aqi_label":     r.aqi_label,
+                "aqi_colour":    r.aqi_colour,
+                "uv":            round(r.uv, 1),
+                "uv_label":      r.uv_label,
+                "uv_colour":     r.uv_colour,
+                "loop_pct":      round(r.loop.loop_ratio * 100),
+                "paved_pct":     round(r.paved_frac * 100),
+                "shade_pct":     round(r.shade_frac * 100),
+                "score":         round(r.score * 100),
+                "elevation_ft":  round(getattr(r, "_elevation_gain_ft", 0) or 0),
+                "gpx_id":        gpx_ids[i] if i < len(gpx_ids) else None,
             }
             route_cards.append(card)
 
